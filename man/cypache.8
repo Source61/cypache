@@ -1,0 +1,275 @@
+.TH CYPACHE 8 2026-10-30 Cypache "Cypache Manual"
+.ds AD l
+.nh
+.SH NAME
+cypache \- secure, fast HTTP server for Python
+.SH SYNOPSIS
+.B systemctl
+.RB { start | stop | restart | reload | status }
+.B cypache
+.PP
+.B /opt/cypache/venv/bin/python \-I
+.I config.py
+.SH DESCRIPTION
+Cypache serves static files and Python applications over HTTP/1.1 and, with TLS, HTTP/2.
+It is written in Cython on top of fastepoll, a multi\-process epoll server core:
+each worker process runs an event loop and the sites' Python handlers, natively, with no CGI or FastCGI hop.
+.PP
+Its configuration is a Python script that builds the sites and calls
+.BR serve() ,
+described in
+.BR cypache\-config (5).
+The Python side of a site, its handlers, apps and views, is in
+.BR cypache\-apps (7).
+The Debian package runs
+.I /etc/cypache/config.py
+as the
+.B cypache
+user, with the hardened systemd unit
+.BR cypache.service ,
+on ports 80 and 443.
+.PP
+Cypache is strict by design.
+A request that a proxy or firewall in front could read differently is refused, or redirected to its one clean form;
+static files are confined to their root by the kernel;
+and every limit and timeout has a safe default and can't be turned off.
+.SH SITES
+The default configuration serves each folder in
+.I /var/www/sites
+as a site named after its host:
+.PP
+.EX
+/var/www/sites/example.com/public/        static files
+/var/www/sites/example.com/controllers/   Python handlers, routed by path
+/var/www/sites/example.com/views/         their views
+/var/www/sites/example.com/example/       the site\(aqs own package
+.EE
+.IP \(bu 2
+A folder answers for its name and for
+.B www.\&
+its name; one whose name starts with
+.B www.\&
+or is an address in brackets answers for that name alone.
+.IP \(bu 2
+A folder named
+.BR default ,
+or a symlink to a site's folder, answers for every other name, also for domains others point at the server.
+Without one, a request for an unknown name gets
+.BR "421 Misdirected Request" .
+Until there's a site at all, a page says Cypache works.
+.IP \(bu 2
+A
+.I lost+found
+folder is no site.
+Any other folder whose name isn't a host name stops the configuration with an error.
+.IP \(bu 2
+The sites' folders are on one Python import path, so a site's package (or module) needs a name of its own.
+One that another site's package, or one of Python's or the installed ones, already has stops the configuration with an error,
+rather than let one site's
+.B import
+load another's code.
+.IP \(bu 2
+A site is served over HTTPS as soon as its certificate is in
+.IR /etc/cypache/tls/ name
+(see HTTPS); plain HTTP then redirects there.
+.PP
+A first site, with a page and a handler for
+.IR /news :
+.PP
+.EX
+mkdir \-p /var/www/sites/example.com/public /var/www/sites/example.com/controllers
+echo "<h1>Hello</h1>" > /var/www/sites/example.com/public/index.html
+printf \(aqdef get(request):\en  return "<h1>News</h1>"\en\(aq > /var/www/sites/example.com/controllers/news.py
+.EE
+.SH CHANGES
+A changed or new
+.BR .py ,
+the configuration's included, is served a second or so after it's saved.
+The new code loads in a new generation of the server while the previous one keeps serving;
+code that doesn't load is reported in the journal, and the previous code goes on serving.
+Static files are served as they are at once, and a new site's folder, or a site's new
+.IR public/ ,
+.I controllers/
+or
+.IR views/ ,
+is picked up without a restart too.
+.PP
+Other changes take a command:
+.TP
+.B systemctl restart cypache
+after changing the ports or addresses the configuration listens on.
+.TP
+.B systemctl reload cypache
+loads new certificates (SIGHUP) for new connections; open ones keep theirs.
+The certbot deploy hook does this by itself.
+.TP
+.B systemctl status cypache
+shows whether it runs.
+A configuration that fails at a start is restarted again and again, ever more slowly, and its errors are in the journal:
+.BR "journalctl \-u cypache" .
+.SH HTTPS
+Get a certificate once a site answers over plain HTTP:
+.PP
+.EX
+certbot certonly \-\-webroot \-w /var/www/acme \-d example.com \-d www.example.com \e
+  \-\-deploy\-hook /opt/cypache/tools/certbot\-deploy\-hook
+.EE
+.PP
+Certbot's keys are readable by root only.
+The deploy hook checks that certificate and key match, copies them for the
+.B cypache
+group into a new directory, and switches the symlink
+.IR /etc/cypache/tls/ name
+to it in one rename, so the server never reads a certificate and key from different renewals.
+Then it has Cypache reload its certificates, or restart for a name's first certificate.
+Pass it per certificate as above: in certbot's
+.I renewal\-hooks/deploy
+it would copy every certificate's key for the
+.B cypache
+group, also those of other services.
+.PP
+Over HTTPS, every response carries
+.B Strict\-Transport\-Security
+for a year, and plain HTTP gets
+.B 308
+to the same URL over HTTPS, except certbot's challenges in
+.IR /var/www/acme .
+TLS is 1.2 and 1.3, with forward\-secret AEAD ciphers only, and post\-quantum hybrid key exchange where OpenSSL has it.
+On Linux 6.14 and later, with the kernel's
+.B tls
+module (the package loads it at boot), files go out with zero\-copy
+.BR sendfile ()
+through kernel TLS.
+.SH SIGNALS
+.TP
+.B SIGTERM\fR, \fPSIGINT
+Stop: open requests get
+.B shutdownTimeout
+(10 seconds) to finish, idle connections close at once.
+systemd kills what's left after 20 seconds.
+.TP
+.B SIGHUP
+Load the certificates anew.
+.TP
+.B SIGQUIT
+Stop at once, without waiting for requests.
+.PP
+The signals go to the main process, which passes them on to the server.
+.SH SECURITY
+.IP \(bu 2
+The unit runs the server as
+.BR cypache ,
+with no privilege but binding ports 80 and 443, and no other ports
+.RB ( SocketBindAllow= ).
+It sees the system read\-only and no home directories, except
+.I /var/log/cypache
+and its own private
+.IR /tmp ,
+.I /var/tmp
+and
+.IR /dev/shm .
+It can't see other processes or devices, and has the system calls of
+.B @system\-service
+without privileged ones.
+A config listening on other ports changes
+.BR SocketBindAllow= ,
+with
+.BR "systemctl edit cypache" .
+.IP \(bu 2
+Code and static files belong to root and are writable by no one else, nor are the directories above them:
+a
+.B .py
+the server's user could plant would run within a second.
+The package refuses to install where
+.IR /opt ,
+.IR /etc/cypache ,
+.I /var/www/acme
+or
+.I /var/www/sites
+isn't root's or is writable by others.
+.IP \(bu 2
+A directory an application writes to, such as one for uploads, belongs to
+.B cypache
+with mode 750, outside the static root and the code, and is listed in
+.B ReadWritePaths=
+.RB ( "systemctl edit cypache" ).
+Everywhere else, writes fail with
+.BR EROFS .
+.IP \(bu 2
+The server's processes aren't dumpable: other processes of its user can't attach to them or read their memory or open files.
+Debug or profile them as root.
+.IP \(bu 2
+Every site's code runs in the same worker processes, and those hold every site's TLS private key.
+Code one site runs can read the other sites' data and keys:
+sites that don't trust each other belong on separate servers, each with a Cypache of its own.
+.IP \(bu 2
+Slow and idle clients are cut off by timeouts and minimum rates, in both directions; see
+.BR cypache\-config (5).
+.SH LOGS
+Each response gets a line in
+.IR /var/log/cypache/access.log ,
+in the combined format followed by the Host and the seconds the response took;
+.BR cypache\-config (5)
+describes it.
+It's rotated daily and kept for 14 days.
+Errors, handler tracebacks and stuck handlers go to the journal:
+.BR "journalctl \-u cypache" .
+.SH PYTHON LIBRARIES
+The server runs the system's Python, and its venv sees the system's packages, so a site's libraries come from apt with the system's security updates:
+.PP
+.EX
+apt install python3\-pymysql python3\-pil python3\-bcrypt
+.EE
+.PP
+A library the distribution doesn't package goes into the venv, and is then updated by hand:
+.PP
+.EX
+/opt/cypache/venv/bin/python \-I \-m pip install \fIname\fP
+.EE
+.SH FILES
+.TP
+.I /etc/cypache/config.py
+The configuration, root's (mode 644, or 640 with group
+.B cypache
+if it holds secrets).
+Upgrades keep changes to it.
+.TP
+.IR /etc/cypache/tls/ name /
+The certificates the deploy hook copies, as
+.I fullchain.pem
+and
+.IR privkey.pem .
+.TP
+.I /var/www/sites/
+The default configuration's sites.
+.TP
+.I /var/www/acme/
+Certbot's webroot, served for
+.I /.well\-known/acme\-challenge/
+over plain HTTP.
+.TP
+.I /var/log/cypache/access.log
+The access log.
+.TP
+.I /opt/cypache/venv/
+The server, fastepoll and their Python environment.
+.TP
+.I /opt/cypache/tools/certbot\-deploy\-hook
+The certbot deploy hook.
+.TP
+.I /usr/lib/systemd/system/cypache.service
+The unit; change it with
+.BR "systemctl edit cypache" .
+.TP
+.I /etc/logrotate.d/cypache
+The access log's rotation.
+.TP
+.I /usr/share/doc/cypache/README.md
+The complete documentation.
+.SH SEE ALSO
+.BR cypache\-config (5),
+.BR cypache\-apps (7),
+.BR certbot (1),
+.BR systemctl (1),
+.BR journalctl (1),
+.BR systemd.exec (5)

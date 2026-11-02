@@ -1,0 +1,60 @@
+[Unit]
+Description=Cypache web server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=cypache
+Group=cypache
+ExecStart=/opt/cypache/venv/bin/python -I /etc/cypache/config.py
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=2
+RestartSteps=6
+RestartMaxDelaySec=60
+TimeoutStopSec=20
+# SIGTERM to the reload launcher only, which passes it on once (README, Production)
+KillMode=mixed
+LimitNOFILE=65536
+UMask=0027
+LogsDirectory=cypache
+LogsDirectoryMode=0750
+
+# Ports 80 and 443, the config's, and no other privilege
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+SocketBindAllow=tcp:80
+SocketBindAllow=tcp:443
+SocketBindDeny=any
+NoNewPrivileges=yes
+
+# A read-only system, except the log directory and a private /tmp, /var/tmp (spool files) and /dev/shm; list the
+# directories apps write to, such as upload directories, in ReadWritePaths=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+TemporaryFileSystem=/dev/shm:mode=1777,nosuid,nodev,noexec
+PrivateIPC=yes
+ProtectProc=invisible
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+# not RestrictSUIDSGID=: its filter can't see openat2()'s flags, so it blocks openat2(), which static files need
+RemoveIPC=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @aio @keyring userfaultfd process_vm_readv process_vm_writev
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

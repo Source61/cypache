@@ -1,0 +1,431 @@
+.TH CYPACHE\-APPS 7 2026-10-30 Cypache "Cypache Manual"
+.ds AD l
+.nh
+.SH NAME
+cypache\-apps \- the Python handlers, apps and views of Cypache sites
+.SH SYNOPSIS
+.EX
+# controllers/news.py: answers GET /news, and /news/anything
+import cypache
+
+def get(request):
+  return {"path": request.path, "page": request.args.get("page", "1")}
+
+def post(request):
+  request.setCookie("seen", "1")
+  return cypache.redirect("/news")
+.EE
+.SH DESCRIPTION
+A site's Python runs in Cypache's worker processes, as functions that take a
+.B Request
+and return the response.
+A Site reaches them by exact path, through
+.BR Site(routes=...) ,
+or by file, through the apps and views directories
+.RB ( Site(apps=...,\ views=...) ),
+much as a PHP router does.
+.BR cypache\-config (5)
+describes the Site and the server.
+.SH HANDLERS
+A handler returns one of:
+.TP
+.B str
+HTML
+.RB ( "text/html; charset=utf\-8" ).
+.TP
+.B bytes
+.BR application/octet\-stream .
+.TP
+.BR dict ", " list
+JSON.
+.TP
+.B Response(body=b"", status=200, headers=(), contentType=None)
+Anything else.
+.B headers
+is a dict, or a list of pairs for repeated headers such as
+.BR Set\-Cookie .
+Names the server controls
+.RB ( Content\-Length ,
+.BR Transfer\-Encoding ,
+.BR Connection ,
+.BR Date ,
+\&...) and values with control characters raise
+.B ValueError
+when the
+.B Response
+is built.
+Spaces and tabs around a value are dropped.
+.PP
+.B cypache.redirect(location, status=303)
+makes a redirect (301, 302, 303, 307 or 308); characters a URL can't hold, non\-ASCII and backslashes among them, are percent\-encoded.
+.PP
+An exception in a handler, or an invalid return value, gives the client a plain
+.B 500
+and prints the traceback to stderr, the journal under systemd (at most 10 per 10 seconds per worker).
+Raising
+.B cypache.BadRequest
+gives
+.B 400
+without a log line.
+Only
+.B SystemExit
+and
+.B KeyboardInterrupt
+stop the worker.
+.SH REQUEST
+From the request:
+.TP
+.BR method ", " path ", " query ", " host ", " version ", " scheme
+.B path
+is percent\-decoded, with dot segments resolved and slashes merged;
+.B query
+is raw;
+.B host
+is lowercase, without the port;
+.B scheme
+is
+.B \(dqhttps\(dq
+or
+.BR \(dqhttp\(dq .
+.TP
+.B headers
+A dict of lowercase names; repeated fields are joined with
+.BR \(dq,\ \(dq ,
+cookies with
+.BR \(dq;\ \(dq .
+.TP
+.B remote
+The peer's address.
+.TP
+.BR body ", " stream
+The whole body as bytes, or a new read\-only file over it.
+.B body
+reads a spooled body into memory at its first use, where
+.B stream
+doesn't.
+.TP
+.BR args ", " form ", " cookies
+The query's parameters, the fields of an urlencoded or multipart body, and the cookies, parsed at first use.
+A repeated name keeps its last value, and a repeated cookie its first.
+.B args
+and
+.B form
+also have
+.BI getlist( name )
+for all of a name's values, in order, as for checkboxes sharing a name.
+More than 1000 fields, or a malformed form, give
+.BR 400 .
+.TP
+.BR files ", " uploads
+A multipart body's files, by field name (the last one per name), or all of them, as
+.B Upload
+objects (see UPLOADS).
+.PP
+For the response, when a handler returns a bare body or nothing:
+.TP
+.BR status ", " contentType
+Writable; they apply to a bare body.
+.TP
+.BI setHeader( name ", " value )
+Adds a header.
+.TP
+.BI setCookie( name ", " value ", maxAge=None, path=\(dq/\(dq, domain=None, secure=None, httpOnly=True, sameSite=\(dqLax\(dq)"
+Adds a
+.BR Set\-Cookie ,
+.B Secure
+by default over HTTPS.
+The value must be cookie\-octets; encode it first otherwise.
+.PP
+Headers and cookies set this way are also added to a
+.B Response
+the handler returns.
+Other attributes
+.RB ( "request.user = ...\&" )
+are free for the handlers along one request to share; the ones above are read\-only, except
+.B status
+and
+.BR contentType .
+.SH APPS
+.EX
+controllers/            Site(apps=...)
+  auto.py               auto(request): runs first, for every request
+  index.py              get(request): what nothing deeper matches
+  news.py               get(request): /news
+  world/
+    auto.py             auto(request): runs for /world/...
+    character.py        get, post: /world/character/Bubble,
+                        with request.params == ("Bubble",)
+    map.png.py          get(request): /world/map.png
+    _queries.py         shared code: from . import _queries
+views/                  Site(views=...)
+  header.py             render(request): returns "<html>..."
+  news.py               render(request): the view mirroring news.py
+.EE
+.TP
+The walk
+The request's path is walked against the apps directory one segment at a time.
+Every
+.B auto.py
+on the way runs its
+.BR auto(request) ,
+the top one first, whatever the method.
+The deepest
+.IB name .py
+named like the next segment is the endpoint, or else the nearest
+.B index.py
+on the way.
+.B request.params
+holds the segments the walk didn't consume.
+.TP
+Methods
+The endpoint's
+.BR get ,
+.BR post ,
+.BR put ,
+.BR delete ,
+.B patch
+or
+.B options
+handles the request, and HEAD uses
+.BR get .
+Only functions the module defines itself count, so an imported
+.B get
+is no handler, and a decorator must keep the function's identity with
+.BR functools.wraps .
+Other methods get
+.B 405
+(OPTIONS
+.BR 204 ),
+with
+.B Allow
+listing those it has, after the autos on the walk ran.
+.TP
+Ending a request
+An
+.B auto
+or endpoint that returns something ends the request with it as the response, such as
+.B cypache.redirect(\(dq/login\(dq)
+from an
+.B auto.py
+that checks a session.
+.TP
+Views
+When nothing returns a response, the views render.
+.BI request.view( path ", slot=\(dqbody\(dq)"
+queues one into the
+.BR header ,
+.B body
+or
+.B footer
+slot; the path is absolute from the views directory, or relative to the running handler's directory, and
+.I name
+finds
+.IB name .py
+or
+.IB name /index.py\c
+\&.
+An endpoint that queues no body view, and dispatches nothing, gets the view mirroring its own path.
+Each view's
+.B render(request)
+returns a
+.BR str ,
+and the slots render in order.
+With
+.B request.status
+204, 205 or 304, no views render.
+.TP
+.BI request.dispatch( path )
+Walks another path in the same request, after what's queued, skipping the
+.B auto.py
+files that already ran.
+One request runs at most 64 handlers, so a dispatch loop ends in a
+.BR 500 .
+.TP
+.B request.stop()
+Cancels the endpoint of the walk the running
+.B auto
+belongs to, so an
+.B auto.py
+can take over the routing.
+.TP
+Loading
+Modules are imported as a package per Site, so relative imports work, and directories are packages without running an
+.IR __init__.py .
+Names starting with
+.B .\&
+or
+.B _
+aren't routed, so helpers get
+.B _
+names: a
+.I cache.py
+that defines
+.B get(key)
+would be routed.
+A routed module must define a method function
+.RB ( auto
+for
+.IR auto.py ,
+.B render
+for a view).
+Symlinks are refused, as is a
+.IB name .py
+next to a
+.IB name /
+directory.
+.TP
+Static files first
+A file under the Site's static root is served without any
+.B auto.py
+running, so everything there is public.
+.SH THREADS
+.IP \(bu 2
+Handlers run in a pool of threads in each worker
+.RB ( serve(threads=16) ),
+so one waiting on a database doesn't hold up the worker's other connections.
+They run concurrently: module\-level state, such as a cache dict or a shared database connection, is shared between requests, so use thread\-safe objects or locks, or a connection per thread.
+.IP \(bu 2
+A handler, or a view's
+.BR render ,
+that never blocks can be marked
+.B @cypache.inline
+to run on the worker's event loop instead, which is faster.
+An apps walk starts on the loop if its first handler is marked, and moves to the pool at the first handler or view that isn't.
+.IP \(bu 2
+With 16 jobs per thread already waiting, a request gets
+.BR 503 .
+A job doesn't run if its connection is gone when its turn comes.
+.IP \(bu 2
+A thread can't be stopped from outside, so a handler that hangs keeps its thread.
+Past
+.B handlerTimeout
+(120 seconds) the worker prints where it's stuck, once.
+When all of a worker's threads are stuck, it shuts down, and fastepoll starts a fresh one (with
+.BR workers=1 ,
+the server exits).
+.IP \(bu 2
+A process forked in a handler must end with
+.BR os._exit() ;
+one that returns into the server is ended with a message.
+.IP \(bu 2
+Over HTTPS, a client that half\-closes its connection while its handler runs gets no response, since TLS has no half\-close; the access log shows
+.BR 499 .
+.SH UPLOADS
+A site that takes uploads raises
+.B maxBodyBytes
+in its
+.BR serve() .
+A body over
+.B spoolBytes
+(1 MiB) is written to an unnamed spool file while it arrives, so
+.B request.body
+would read it all into memory; read
+.B request.stream
+or the uploads instead.
+An urlencoded
+.B form
+is parsed in memory, and limited to 1 MiB.
+.PP
+An
+.B Upload
+has:
+.TP
+.BR name ", " contentType ", " size
+The form field's name, and the file's type and size.
+.TP
+.B filename
+The client's name for the file, without directories, control or bidi characters.
+Never use it as a path on the server.
+.TP
+.BR read() ", " open()
+The file's bytes, or a read\-only file object over them.
+.TP
+.BI save( path ", mode=0o640)"
+Writes the file to
+.IR path ,
+which must not exist yet: nothing there is overwritten or followed, a symlink included.
+It's written unnamed and then linked into place, so it appears whole or not at all, and a spooled file is copied in the kernel.
+It refuses a path among the code, where the file would run: in any Site's apps or views, in the directory of other code the server loaded, or in a directory on Python's import path.
+Keep the directory outside the static root too, where an uploaded
+.I .html
+would be served as the site's own.
+Under the Debian package's unit it belongs to
+.B cypache
+with mode 750 and is listed in
+.B ReadWritePaths=
+(see
+.BR cypache (8));
+elsewhere
+.B save()
+fails with
+.BR EROFS .
+.PP
+The multipart parser is strict: anything a parser in front, such as a firewall, could read differently gets
+.BR 400 .
+The body must start with its boundary, which may appear only as a delimiter line of its own;
+parameters follow RFC 9110 strictly;
+each part has one
+.B form\-data
+disposition with a UTF\-8 name;
+and there are at most 1000 parts, with 16 KiB of header fields each, and 1 MiB of part headers and plain fields together.
+Some clients' uploads get
+.B 400
+because of this: a filename ending in a backslash, a
+.B \(dq
+sent as
+.B \e\(dq
+(Go's
+.BR mime/multipart ,
+aiohttp), or a non\-ASCII filename from .NET.
+.PP
+A body must keep arriving at
+.B minBodyRate
+(8 KiB/s) on average, or it gets
+.BR 408 ;
+see
+.BR cypache\-config (5).
+.SH RELOAD
+With
+.B serve(reload=True)
+(the default), a changed or new
+.B .py
+is served a second or so after it's saved: a new generation of the server loads all the code while the previous one serves.
+Module\-level state starts afresh in each generation.
+Code that doesn't load is reported, and the previous code keeps serving.
+.SH EXAMPLES
+An
+.B auto.py
+that keeps
+.I /admin
+and everything below it for signed\-in users:
+.PP
+.EX
+# controllers/admin/auto.py; controllers/_session.py defines user()
+import cypache
+from .._session import user
+
+def auto(request):
+  request.user = user(request.cookies.get("__Host\-session"))
+  if request.user is None:
+    return cypache.redirect("/login")
+.EE
+.PP
+An endpoint that saves an upload under a name of its own, and renders its view:
+.PP
+.EX
+import secrets
+import cypache
+
+def post(request):
+  photo = request.files.get("photo")
+  if photo is None:
+    raise cypache.BadRequest("no photo")
+  photo.save(f"/srv/uploads/{secrets.token_hex(16)}")
+  request.view("header", "header")
+.EE
+.SH SEE ALSO
+.BR cypache (8),
+.BR cypache\-config (5)
+.PP
+.I /usr/share/doc/cypache/README.md
+has the complete documentation.

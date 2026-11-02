@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cypache works</title>
+<style>
+  body { max-width: 40em; margin: 4em auto; padding: 0 1em; font: 16px/1.5 system-ui, sans-serif; color: #222; background: #fff; }
+  code { background: #eee; padding: 0 .2em; }
+  @media (prefers-color-scheme: dark) { body { color: #ddd; background: #181818; } code { background: #333; } }
+</style>
+<h1>Cypache works</h1>
+<p>There are no sites yet. To add one, put its files in a folder named after its host, and restart Cypache:</p>
+<ul>
+  <li><code>/var/www/sites/example.com/public/</code> for static files, such as <code>index.html</code></li>
+  <li><code>/var/www/sites/example.com/controllers/</code> and <code>views/</code> for Python</li>
+  <li><code>systemctl restart cypache</code></li>
+</ul>
+<p>The config is <code>/etc/cypache/config.py</code>, and its documentation <code>/usr/share/doc/cypache/README.md</code>.</p>

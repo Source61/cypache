@@ -1,0 +1,54 @@
+#!/bin/sh
+# certbot --deploy-hook for Cypache: copies a new or renewed certificate to /etc/cypache/tls/<name>/, where the cypache
+# group can read it (certbot's own files stay root-only), then has Cypache reload its certificates (SIGHUP), or restart
+# for a name's first one.
+#   certbot certonly --webroot -w /var/www/acme -d example.com --deploy-hook /opt/cypache/tools/certbot-deploy-hook
+#   cypache.Site("example.com", tls="/etc/cypache/tls/example.com", ...)
+# Pass it per certificate, as above: in renewal-hooks/deploy it would copy every certificate's key for the cypache group.
+# It runs as root, so it, its directories and /etc/cypache must be root's and not writable by anyone else.
+# CYPACHE_GROUP and CYPACHE_SERVICE override the group and the systemd unit, both "cypache" by default; CYPACHE_ETC
+# overrides /etc/cypache (for tests).
+set -eu
+group=${CYPACHE_GROUP:-cypache}
+service=${CYPACHE_SERVICE:-cypache}
+etc=${CYPACHE_ETC:-/etc/cypache}
+tls=$etc/tls
+name=$(basename "$RENEWED_LINEAGE")
+
+fail() {
+  echo "certbot-deploy-hook: $*" >&2
+  exit 1
+}
+
+# A directory someone else could change would let them redirect what this root-run hook writes
+for dir in "$etc" "$tls"; do
+  [ -e "$dir" ] || [ -L "$dir" ] || continue
+  [ ! -L "$dir" ] && [ -d "$dir" ] && [ "$(stat -c %u "$dir")" = 0 ] || fail "$dir must be a directory owned by root"
+  case $(stat -c %a "$dir") in *[2367]? | *[2367]) fail "$dir must not be writable by its group or others";; esac
+done
+[ -L "$tls/$name" ] || [ ! -e "$tls/$name" ] || fail "$tls/$name must be the symlink this hook keeps there: move the directory away once"
+cert=$(openssl x509 -noout -pubkey -in "$RENEWED_LINEAGE/fullchain.pem") && key=$(openssl pkey -pubout -in "$RENEWED_LINEAGE/privkey.pem") && [ -n "$cert" ] && [ "$cert" = "$key" ] || fail "the certificate and key in $RENEWED_LINEAGE don't load or don't match"
+[ -d "$etc" ] || install -d -m 0755 -o root -g root "$etc"
+[ -d "$tls" ] || install -d -m 0750 -o root -g "$group" "$tls"
+
+# The pair goes into a new directory, and one rename of the <name> symlink switches to it: Cypache never sees a
+# certificate and key from different renewals, also if this hook stops halfway
+umask 077
+previous=$(readlink "$tls/$name" 2>/dev/null || true)
+version=.$name.$(date +%s%N)
+install -d -m 0750 -o root -g "$group" "$tls/$version"
+install -m 0644 -o root -g "$group" "$RENEWED_LINEAGE/fullchain.pem" "$tls/$version/fullchain.pem"
+install -m 0640 -o root -g "$group" "$RENEWED_LINEAGE/privkey.pem" "$tls/$version/privkey.pem"
+ln -sfn "$version" "$tls/.$name.next"
+mv -T "$tls/.$name.next" "$tls/$name"
+for old in "$tls/.$name".*; do # older copies of this certificate; the previous one may still be being read
+  case ${old#"$tls/.$name."} in '' | *[!0-9]*) continue;; esac # another certificate's, or not a copy
+  [ "$old" = "$tls/$version" ] || [ "$old" = "$tls/$previous" ] || rm -rf -- "$old"
+done
+# A renewal is reloaded. A name's first certificate restarts the server, so a config that looks for certificates by
+# name (tools/config.py) serves it. A stopped server reads the copy when it starts.
+if [ -n "$previous" ]; then
+  systemctl try-reload-or-restart "$service"
+else
+  systemctl try-restart "$service"
+fi

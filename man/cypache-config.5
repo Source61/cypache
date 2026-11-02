@@ -1,0 +1,543 @@
+.TH CYPACHE\-CONFIG 5 2026-10-30 Cypache "Cypache Manual"
+.ds AD l
+.nh
+.SH NAME
+cypache\-config \- the Python script that configures Cypache
+.SH SYNOPSIS
+.EX
+import cypache
+
+site = cypache.Site("example.com", "www.example.com", root="/srv/example/public",
+                    apps="/srv/example/controllers", views="/srv/example/views",
+                    tls="/etc/cypache/tls/example.com")
+cypache.serve([site], http=80, https=443, acme="/var/www/acme",
+              accessLog="/var/log/cypache/access.log")
+.EE
+.SH DESCRIPTION
+Cypache's configuration is a Python script.
+It builds a
+.B Site
+for each virtual host and calls
+.BR serve() ,
+which serves them until the server stops.
+The Debian package runs
+.I /etc/cypache/config.py
+with
+.BR "/opt/cypache/venv/bin/python \-I" ;
+.B \-I
+keeps Python from importing modules from the script's directory or the working directory, and from reading
+.B PYTHON*
+variables.
+.PP
+The script runs with the server's privileges, at every start, and with
+.B reload
+once more for each new generation of the code (see RELOAD).
+It must not be writable by the server's user.
+.PP
+Arguments that make no sense, such as a timeout that isn't a positive number, an unknown host name or a directory that doesn't exist, raise
+.B ValueError
+before anything is served.
+.SH SITES
+.EX
+cypache.Site(*hosts, routes=None, root=None, index=("index.html",),
+             precompressed=False, cacheControl=None, apps=None, views=None,
+             tls=None, hsts=31536000, default=False)
+.EE
+.TP
+.I hosts
+Bare names or addresses
+.RB ( \(dqexample.com\(dq ,
+.BR \(dq127.0.0.1\(dq ,
+.BR \(dq[::1]\(dq ),
+matched case\-insensitively against the request's Host without its port or a trailing dot.
+IPv6 addresses match in any spelling.
+.TP
+.B default
+A request for a host no Site lists goes to the Site with
+.BR default=True ,
+or gets
+.B 421 Misdirected Request
+if there is none.
+There is no implicit default, so a site never answers for domains pointed at it by others (DNS rebinding).
+.PP
+A request is served by the first of these that takes it:
+.TP
+.B routes
+A dict of exact, normalized paths to
+.BR handler(request) ;
+see
+.BR cypache\-apps (7).
+.TP
+.B root
+A directory of static files, for GET and HEAD (see STATIC FILES).
+A file that isn't there, or a directory requested without its trailing slash, is left to the apps when there are any, like nginx's
+.BR try_files .
+.TP
+.BR apps ", " views
+Directories of Python modules, routed by file; see
+.BR cypache\-apps (7).
+.PP
+And:
+.TP
+.B index
+The files tried, in order, for a static path ending in
+.BR / .
+.TP
+.B precompressed
+Serve
+.I style.css.br
+or
+.I .gz
+copies next to the files to clients that accept them.
+Off by default, since looking for them costs two opens per request.
+.TP
+.B cacheControl
+A
+.B Cache\-Control
+value for static responses, such as
+.BR \(dqpublic,\ max\-age=3600\(dq .
+Without it, caches guess freshness from the file's age.
+.TP
+.B tls
+A directory with
+.I fullchain.pem
+and
+.I privkey.pem
+(certbot's layout), or a
+.RI ( certificate ", " key )
+pair of files.
+Keys must be unencrypted.
+See HTTPS.
+.TP
+.B hsts
+The
+.B Strict\-Transport\-Security
+max\-age every HTTPS response of the Site carries, a year by default;
+.B 0
+turns it off.
+Turn it off before dropping HTTPS for a domain, then wait out the old max\-age.
+.B includeSubDomains
+and
+.B preload
+aren't sent, since they commit other names too.
+.PP
+No Site's static root, nor the
+.B acme
+directory, may overlap any Site's apps or views:
+this is checked at startup, and again every second for a root that is a symlink, which then gets
+.B 503
+if it was switched onto code.
+.SH OPTIONS
+.EX
+cypache.serve(sites, http=8080, https=None, host=None, acme=None, ...)
+.EE
+.TP
+.BR http =8080
+Port or list of ports for plain HTTP;
+.B None
+for none.
+.TP
+.BR https =None
+Port or list of ports for HTTPS; needed when a Site has
+.BR tls .
+.TP
+.BR host =None
+Address or addresses to listen on;
+.B None
+is all interfaces.
+.TP
+.BR acme =None
+A certbot webroot, served for
+.I /.well\-known/acme\-challenge/
+over plain HTTP for every Site.
+.TP
+.BR workers =0
+Worker processes:
+.B 0
+is one per CPU the server may run on (its affinity, as
+.BR taskset (1)
+or a container sets it),
+.B 1
+serves in the calling process.
+.TP
+.BR threads =16
+Handler threads per worker.
+.TP
+.BR handlerTimeout =120
+Seconds before a running handler is reported as stuck;
+.B None
+turns that off.
+.TP
+.BR headerTimeout =15
+Seconds to receive a complete request head, from the connection or the previous request.
+Idle keep\-alive connections close after it.
+.TP
+.BR bodyTimeout =60
+Seconds a request body may fall behind
+.BR minBodyRate :
+to start, or stalled.
+.TP
+.BR minBodyRate =8192
+Bytes per second a request body must arrive at, and a response be taken at, on average (see TIMEOUTS).
+.TP
+.BR idleTimeout =60
+Seconds without any I/O progress, such as a client that stops reading.
+.TP
+.BR handshakeTimeout =10
+Seconds to finish the TLS handshake.
+.TP
+.BR maxConnections =10000
+Connections per worker.
+.B serve()
+raises the soft open\-file limit to 4 \(mu this + 64, and refuses to start if the hard limit is lower
+.RB ( LimitNOFILE=
+in systemd).
+.TP
+.BR shutdownTimeout =10
+Seconds to finish open requests after SIGTERM or SIGINT.
+.TP
+.BR maxHeaderBytes =16384
+Bytes of request line and header fields
+.RB ( 431 ,
+or
+.B 414
+for the request line).
+.TP
+.BR maxHeaders =100
+Header fields
+.RB ( 431 ).
+.TP
+.BR maxBodyBytes =1048576
+Bytes of a request body
+.RB ( 413 ).
+Sites that take uploads raise it.
+.TP
+.BR maxBodyMemory =67108864
+Request body bytes received and held in memory at once, per worker
+.RB ( 503 ).
+The memory holding them can reach about twice that while bodies grow.
+.TP
+.BR spoolBytes =1048576
+Larger bodies are written to a spool file while they arrive.
+.TP
+.BR maxSpoolBytes =1073741824
+Spooled body bytes at once, per worker
+.RB ( 503 ).
+.TP
+.BR spoolDir =/var/tmp
+Where spool files are made: unnamed temporary files
+.RB ( O_TMPFILE ),
+gone once closed.
+It's opened once at startup, must belong to root or the server's user, and its filesystem must support
+.BR O_TMPFILE .
+.TP
+.BR accessLog =None
+The access log's file (see ACCESS LOG);
+.B None
+for none.
+.TP
+.BR http2 =True
+HTTP/2 over HTTPS, for clients that offer it.
+.TP
+.BR serverName =\(dqCypache\(dq
+The
+.B Server
+header's value;
+.B \(dq\(dq
+omits it.
+.TP
+.BR reload =True
+Serve the new code a moment after a
+.B .py
+changes, once it loads (see RELOAD).
+.TP
+.BR watch =()
+Folders whose subfolders appearing or going reload too, with
+.BR reload .
+.SH TIMEOUTS
+Timeouts can't be turned off.
+.IP \(bu 2
+A request body must keep arriving at
+.B minBodyRate
+on average: each byte buys 1/\fBminBodyRate\fR seconds, banked up to
+.B bodyTimeout
+ahead.
+A body arriving that fast never times out, whatever its size; one that stalls gets
+.B 408
+within
+.BR bodyTimeout .
+.IP \(bu 2
+A client still receiving an earlier response must take it at
+.B minBodyRate
+on average, each byte buying 1/\fBminBodyRate\fR seconds, banked up to
+.B headerTimeout
+ahead.
+One that falls behind is disconnected and the rest of its response dropped, so a client reading slowly can't hold a connection for hours.
+HTTP/2 connections are held to the same rate for all their responses together.
+.IP \(bu 2
+Sites with clients on very slow links lower
+.BR minBodyRate .
+The rate is also what holding a budget costs: a client that sends most of a body at once and the rest at the rate keeps that much of
+.B maxBodyMemory
+or
+.B maxSpoolBytes
+for up to
+.BR maxBodyBytes / minBodyRate
+seconds.
+A site taking large uploads raises
+.BR minBodyRate ,
+or the budgets, to match.
+.IP \(bu 2
+fastepoll's
+.B idleTimeout
+drops a connection without any I/O for that long, also one whose handler runs.
+.SH HTTPS
+.IP \(bu 2
+Each Site's certificate is sent to the names it serves (SNI).
+Clients without SNI, or with a name no Site has, get the certificate of the default Site, or of the first Site with
+.B tls
+if that one has none.
+.IP \(bu 2
+A request whose Host belongs to another Site than the certificate the client checked gets
+.BR 421 :
+one certificate can't be used to reach another site on the same connection (domain fronting).
+.IP \(bu 2
+A Site with
+.B tls
+answers plain HTTP with
+.B 308
+to the same URL over HTTPS, on the first
+.B https
+port.
+A request with a body is redirected without reading it, so the body isn't sent in the clear.
+Sites without
+.B tls
+are served over plain HTTP.
+.IP \(bu 2
+Without
+.BR acme ,
+challenge requests for Sites with
+.B tls
+are redirected to HTTPS like everything else, which Let's Encrypt follows.
+.IP \(bu 2
+TLS is fastepoll's: TLS 1.2 and 1.3 with forward\-secret AEAD ciphers only, post\-quantum hybrid key exchange where OpenSSL has it, and no renegotiation, 0\-RTT or compression.
+With the kernel's
+.B tls
+module, on Linux 6.14 and later, files are sent with zero\-copy
+.BR sendfile ()
+through kernel TLS; older kernels can't change TLS 1.3 keys on a live connection, so there TLS is in userspace.
+.IP \(bu 2
+SIGHUP loads the certificates anew, for new connections.
+If they don't load, the previous ones stay in use and the error is printed.
+.SH HTTP/2
+HTTPS speaks HTTP/2 to clients that offer it (ALPN
+.BR h2 ),
+and HTTP/1.1 to the rest.
+There is no HTTP/2 over plain HTTP and no server push.
+The framing is nghttp2's, with its defenses against known floods.
+.IP \(bu 2
+Each stream's request goes to the HTTP/1 parser as an HTTP/1.1 message with version
+.BR HTTP/2.0 ,
+so every rule here applies to it.
+.B :authority
+is the Host, and a
+.B host
+field that differs from it gets
+.BR 400 .
+.IP \(bu 2
+A field nghttp2 would silently drop (control characters, surrounding whitespace) resets the stream instead.
+A client that provokes more than 1000 resets at once, then 33 a second, is disconnected (MadeYouReset).
+.IP \(bu 2
+At most 32 streams per connection, counting reset streams whose handlers still run (Rapid Reset).
+A stream may send 1 MiB of body ahead, a connection 16 MiB, counted against the body budgets.
+.IP \(bu 2
+A connection without streams gets GOAWAY after
+.BR headerTimeout .
+A connection whose responses wait for the client holds up to 32 of them, and per worker such responses may hold a quarter of the open\-file limit; a stream over that is refused.
+.SH STATIC FILES
+.IP \(bu 2
+Every file is opened with
+.BR openat2 (2)
+and
+.BR RESOLVE_BENEATH ", " RESOLVE_NO_SYMLINKS " and " RESOLVE_NO_XDEV
+relative to the root: the kernel refuses anything outside it, symlinks inside it aren't followed, and mount points aren't crossed.
+The root itself may be a symlink, and is reopened every second, so
+.B "ln \-s release2 next && mv \-T next current"
+switches to a new release atomically.
+Replace single files by renaming a new one over them.
+.IP \(bu 2
+Never served, with
+.BR 404 :
+hidden files (a path segment starting with
+.BR . ,
+except a leading
+.IR /.well\-known/ );
+Python and Cython source, bytecode and notebooks, also compressed or as editor and backup copies;
+backup files
+.RB ( \(ti ", " .bak ", " .old ", " .orig ", " .save ", " .swp );
+symlinks; and anything but regular files and directories.
+Unreadable files get
+.BR 403 .
+.IP \(bu 2
+The root must be on ext2/3/4, btrfs, XFS, tmpfs, F2FS, overlayfs, ZFS or bcachefs, and not in a casefold directory;
+anything else, where other spellings of a name could get past these rules, is refused at startup.
+.IP \(bu 2
+A directory requested without its trailing slash gets
+.B 308
+to add it.
+There are no directory listings.
+Methods other than GET and HEAD get
+.BR 405 .
+.IP \(bu 2
+Content\-Type comes from a fixed table of extensions, with
+.B charset=utf\-8
+for text; unknown ones are
+.BR application/octet\-stream .
+Every response carries
+.BR "X\-Content\-Type\-Options: nosniff" .
+.IP \(bu 2
+.B ETag
+is made of the size, the nanosecond mtime and the inode.
+Conditional requests are evaluated in RFC 9110 order, and
+.B If\-Range
+only accepts an entity tag.
+One byte range per request is served
+.RB ( 206 ", " 416 );
+a request for several gets the whole file.
+.IP \(bu 2
+Files up to 16 KiB go out with the head in one write, larger ones with zero\-copy
+.BR sendfile (2).
+A connection gets its next pipelined request answered only once the previous response is out, so a client that doesn't read can hold at most one open file.
+.SH RELOAD
+With
+.BR reload=True ,
+the process that runs the configuration binds the ports and becomes the launcher, which keeps the listening sockets and forks a generation to run the configuration again and serve them.
+So the configuration runs twice at startup, and must be a file, a directory or zip file with a
+.IR __main__.py ,
+or a module run with
+.BR \-m .
+.IP \(bu 2
+The launcher looks twice a second at every
+.B .py
+in the apps and views directories, and at the files of the other modules the generation loaded, such as the configuration and a site's own package.
+Folders named in
+.B watch
+reload when a subfolder appears or goes.
+.IP \(bu 2
+Once the changes settle, it starts the next generation, which loads all the code while the previous one serves.
+If it loads, it serves the launcher's sockets at once, and the previous one finishes its requests as on SIGTERM.
+The ports never go free.
+Code that doesn't load, or a configuration that now listens elsewhere (which takes a restart), is reported on stderr, and the previous code keeps serving.
+.IP \(bu 2
+With reload, a
+.B .py
+runs a moment after it appears, so the code directories must be writable by root only.
+The server's processes write no
+.IR __pycache__ .
+.IP \(bu 2
+.B reload=False
+imports once, in the calling process: code changes then need a restart.
+.SH ACCESS LOG
+.EX
+203.0.113.7 \- \- [28/Oct/2026:12:03:16 +0100] "GET /news HTTP/1.1" 200 5120 "https://example.com/" "Mozilla/5.0 ..." "example.com" 0.006
+.EE
+.PP
+One line per response, in the combined format that log analyzers and
+.BR fail2ban (1)
+read: the client's address, the local time, the request line as received, the status, the body bytes sent (0 for HEAD and 304),
+.B Referer
+and
+.BR User\-Agent ;
+then the Host the request was routed by
+.RB ( \-
+when it failed before its head was parsed), and the seconds from the complete request head to the response being handed on.
+.IP \(bu 2
+As in nginx,
+.BR \(dq ,
+.B \e
+and bytes outside printable ASCII appear as
+.BI \ex HH\c
+, so a client can't forge a line.
+An empty field is
+.BR \- .
+.IP \(bu 2
+A request whose connection closed before its handler was done is logged as
+.B 499
+(nginx's code): the client reset it (or over HTTPS, which has no half\-close, closed its side), or a timeout or shutdown cut it.
+A connection that closes while idle, or before its request fully arrived, gets no line.
+.IP \(bu 2
+The file must be a regular file.
+Each worker checks once a second whether it was renamed or removed, and opens it anew, so it can be rotated without signals.
+When writing fails, the server goes on serving, prints the error once, and later how many lines were lost.
+.SH REQUESTS
+The HTTP/1.1 parser refuses with
+.B 400
+(or the status given):
+.IP \(bu 2
+anything but CRLF line endings, obs\-fold, whitespace before a colon, control characters in a field;
+.IP \(bu 2
+both
+.B Content\-Length
+and
+.BR Transfer\-Encoding ,
+a repeated
+.BR Content\-Length ,
+a length that isn't plain digits, any transfer coding but
+.BR chunked ,
+chunked framing in HTTP/1.0;
+.IP \(bu 2
+a missing or repeated
+.B Host
+in HTTP/1.1, or a malformed one;
+.IP \(bu 2
+targets that aren't origin\-form, or
+.B *
+for OPTIONS;
+.B #
+in a target;
+.IP \(bu 2
+paths with bad escapes, NUL or control characters,
+.BR \e ,
+an escaped
+.B /
+.RB ( %2F ),
+invalid UTF\-8, or
+.B ..\&
+above the root;
+.IP \(bu 2
+TRACE and CONNECT
+.RB ( 405 ),
+unknown methods
+.RB ( 501 ),
+HTTP versions other than 1.x
+.RB ( 505 ).
+.PP
+A path spelled in a way a proxy's rules could read differently, with dot or empty segments, needless escapes or lowercase hex, gets
+.B 308
+to its clean form, so a proxy in front applies its rules to exactly the path that is served.
+Responses the server makes itself, errors and redirects, carry
+.BR "Cache\-Control: no\-store" .
+.SH EXAMPLES
+Two sites over HTTPS, one taking uploads of up to 100 MiB:
+.PP
+.EX
+import cypache
+
+TLS = "/etc/cypache/tls"
+shop = cypache.Site("shop.example", "www.shop.example", root="/srv/shop/public",
+                    apps="/srv/shop/controllers", views="/srv/shop/views",
+                    tls=f"{TLS}/shop.example")
+blog = cypache.Site("blog.example", root="/srv/blog/public",
+                    tls=f"{TLS}/blog.example", default=True)
+cypache.serve([shop, blog], http=80, https=443, acme="/var/www/acme",
+              accessLog="/var/log/cypache/access.log",
+              maxBodyBytes=100 << 20, minBodyRate=32768)
+.EE
+.SH SEE ALSO
+.BR cypache (8),
+.BR cypache\-apps (7),
+.BR certbot (1),
+.BR openat2 (2)
+.PP
+.I /usr/share/doc/cypache/README.md
+has the complete documentation.
