@@ -351,7 +351,9 @@ Keep the directory outside the static root too, where an uploaded
 would be served as the site's own.
 Under the service's unit it belongs to
 .B cypache
-with mode 750 and is listed in
+with mode 750, and outside
+.IR /var/www/sites ,
+or with the sites hardened, is listed in
 .B ReadWritePaths=
 (see
 .BR cypache (8));

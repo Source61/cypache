@@ -29,9 +29,10 @@ SocketBindAllow=tcp:443
 SocketBindDeny=any
 NoNewPrivileges=yes
 
-# A read-only system, except the log directory and a private /tmp, /var/tmp (spool files) and /dev/shm; list the
-# directories apps write to, such as upload directories, in ReadWritePaths=
+# A read-only system, except the sites (where file permissions decide), the log directory and a private /tmp, /var/tmp
+# (spool files) and /dev/shm. Hardening the sites to the directories apps write to: README, Production
 ProtectSystem=strict
+ReadWritePaths=-/var/www/sites
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes

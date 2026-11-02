@@ -1,0 +1,41 @@
+#!/bin/sh
+# tools/install, as root on Ubuntu or Debian: installs Cypache from PyPI as a systemd service, with this repository's
+# unit, config, certbot deploy hook, log rotation and man pages, and starts it (README, Production). Run again from an
+# updated clone (git pull), it upgrades Cypache and those files, restarting the server if it runs; the config and the
+# log rotation stay as they are, as do the sites.
+set -eu
+umask 022 # what the cypache user must read
+cd "$(dirname "$0")/.."
+venv=/opt/cypache/venv
+unit=/etc/systemd/system/cypache.service
+
+fail() {
+  echo "install: $*" >&2
+  exit 1
+}
+
+[ "$(id -u)" = 0 ] || fail "run it as root"
+[ ! -e /usr/lib/systemd/system/cypache.service ] || fail "Cypache is installed from its Debian package, which a newer .deb upgrades"
+sh tools/deb/preinst # the directories' checks
+apt-get update
+apt-get install -y python3-venv certbot libnghttp2-14
+id cypache > /dev/null 2>&1 || useradd --system --user-group --home-dir /nonexistent --shell /usr/sbin/nologin cypache
+[ -e $venv ] || python3 -m venv --system-site-packages $venv
+$venv/bin/python -I -m pip install --upgrade cypache
+first=
+[ -e $unit ] || first=1
+install -m 644 tools/cypache.service $unit
+install -D -m 755 tools/certbot-deploy-hook /opt/cypache/tools/certbot-deploy-hook
+install -D -m 644 tools/welcome.html /usr/share/cypache/welcome/index.html
+for page in man/*; do install -D -m 644 "$page" "/usr/local/share/man/man${page##*.}/${page##*/}"; done
+[ -e /etc/cypache/config.py ] || install -D -m 644 tools/config.py /etc/cypache/config.py
+[ -e /etc/logrotate.d/cypache ] || install -m 644 tools/cypache.logrotate /etc/logrotate.d/cypache
+mkdir -p /var/www/acme /var/www/sites
+echo tls > /etc/modules-load.d/tls.conf
+[ -d /sys/module/tls ] || modprobe tls || echo "install: the tls kernel module didn't load; HTTPS works without it, but without kernel TLS"
+systemctl daemon-reload
+if [ -n "$first" ]; then
+  systemctl enable --now cypache
+else
+  systemctl try-restart cypache
+fi

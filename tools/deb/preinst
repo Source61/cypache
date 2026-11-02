@@ -1,0 +1,27 @@
+#!/bin/sh
+# Refuses directories that anyone but root could change: the server runs the code in them, and root writes into them
+# (the certbot deploy hook, and certbot in its webroot). A first install also refuses a manual install's /opt/cypache.
+# tools/install runs it without arguments, for the directories' checks alone.
+set -e
+fail() {
+  echo "cypache: $*" >&2
+  exit 1
+}
+
+unsafe() {
+  [ -L "$1" ] || [ ! -d "$1" ] || [ "$(stat -c %u "$1")" != 0 ] && return 0
+  case $(stat -c %a "$1") in *[2367]? | *[2367]) return 0;; esac
+  return 1
+}
+
+if [ "$1" = install ] && [ -z "$2" ] && { [ -e /opt/cypache ] || [ -L /opt/cypache ]; }; then
+  fail "/opt/cypache is there already, from a manual install? Remove it first (README, Production)"
+fi
+for dir in /opt /etc/cypache /var/www/acme /var/www/sites; do
+  if { [ -e $dir ] || [ -L $dir ]; } && unsafe $dir; then
+    fail "$dir must be a directory of root's that no one else can write to"
+  fi
+done
+if [ -e /var/www ] && unsafe /var/www; then
+  echo "cypache: /var/www isn't root's alone, so whoever can write to it can point certbot's writes to /var/www/acme elsewhere" >&2
+fi

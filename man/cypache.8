@@ -162,6 +162,8 @@ The unit runs the server as
 with no privilege but binding ports 80 and 443, and no other ports
 .RB ( SocketBindAllow= ).
 It sees the system read\-only and no home directories, except
+.I /var/www/sites
+(where file permissions decide),
 .I /var/log/cypache
 and its own private
 .IR /tmp ,
@@ -190,11 +192,35 @@ isn't root's or is writable by others.
 .IP \(bu 2
 A directory an application writes to, such as one for uploads, belongs to
 .B cypache
-with mode 750, outside the static root and the code, and is listed in
+with mode 750, outside the static root and the code.
+In
+.I /var/www/sites
+that's all it takes; anywhere else it's listed in
 .B ReadWritePaths=
-.RB ( "systemctl edit cypache" ).
-Everywhere else, writes fail with
+.RB ( "systemctl edit cypache" ),
+or writes fail with
 .BR EROFS .
+.IP \(bu 2
+In
+.IR /var/www/sites ,
+only file permissions keep the server from the code.
+Hardening it leaves the server only the directories applications write to:
+.B systemctl edit cypache
+with these lines above the one it says is discarded, then
+.BR "systemctl restart cypache" .
+The empty
+.B ReadWritePaths=
+drops the unit's
+.IR /var/www/sites ;
+the directories listed after it must exist.
+.RS
+.PP
+.EX
+[Service]
+ReadWritePaths=
+ReadWritePaths=/var/www/sites/example.com/uploads
+.EE
+.RE
 .IP \(bu 2
 The server's processes aren't dumpable: other processes of its user can't attach to them or read their memory or open files.
 Debug or profile them as root.

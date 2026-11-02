@@ -351,32 +351,29 @@ Installed as below, as root, Cypache runs as a systemd service on ports 80 and 4
 - **HTTPS:** once a site answers over plain HTTP, get its certificate (see Certbot). The deploy hook restarts Cypache for a name's first certificate, and from then on the site is served over HTTPS, with plain HTTP redirected to it.
 - **The config** is Python, root's (mode 644, or 640 with group `cypache` if it holds secrets), run at every start. Other options go into its `serve()` (see Options), such as `maxBodyBytes` for uploads over 1 MiB. Upgrades keep your changes to it.
 
-On Ubuntu or Debian, from PyPI and this repository's `tools/` and `man/`:
+On Ubuntu or Debian, as root:
 
 ```sh
-apt install python3-venv certbot libnghttp2-14
-umask 022 # what the cypache user must read
-useradd --system --user-group --home-dir /nonexistent --shell /usr/sbin/nologin cypache
-python3 -m venv --system-site-packages /opt/cypache/venv
-/opt/cypache/venv/bin/pip install cypache
-install -D -m 755 tools/certbot-deploy-hook /opt/cypache/tools/certbot-deploy-hook
-install -m 644 tools/cypache.service /etc/systemd/system/
-install -m 644 tools/cypache.logrotate /etc/logrotate.d/cypache
-install -D -m 644 tools/config.py /etc/cypache/config.py
-install -D -m 644 tools/welcome.html /usr/share/cypache/welcome/index.html
-for page in man/*; do install -D -m 644 $page /usr/local/share/man/man${page##*.}/${page##*/}; done
-install -d -m 755 /var/www/acme /var/www/sites
-echo tls > /etc/modules-load.d/tls.conf && modprobe tls
-systemctl enable --now cypache
+git clone https://github.com/Source61/cypache && cypache/tools/install
 ```
 
+- **What it installs:** `python3-venv`, `certbot` and `libnghttp2-14` from apt, the `cypache` user, Cypache from PyPI in `/opt/cypache/venv`, and from this repository's `tools/` and `man/` the unit (`/etc/systemd/system/cypache.service`), the config, the certbot deploy hook (`/opt/cypache/tools/`), the log rotation, the welcome page and the man pages (`/usr/local/share/man`). It makes `/var/www/acme` and `/var/www/sites`, loads the `tls` module at once and at boot, and enables and starts the server.
+- **Upgrades:** run it again after `git pull` in the clone. It upgrades Cypache from PyPI, replaces the unit, deploy hook, welcome page and man pages, and restarts the server if it runs. Your config and log rotation stay, and changes to the unit belong in `systemctl edit cypache`.
+- **Refusals:** it checks the directories as the Debian package does (see Refusals below), and refuses to run where the Debian package is installed.
 - **Paths:** the unit runs `/opt/cypache/venv/bin/python -I /etc/cypache/config.py`; `systemctl edit cypache` changes that. `-I` keeps Python from importing modules from the config's directory or the working directory, and from reading `PYTHON*` variables.
 - **Sites** can live anywhere outside `/home`, given a config that names them; the default one's are in `/var/www/sites`.
   - Code and static files belong to root and are writable by no one else, nor are the directories above them. Apps are imported at every start, and reloaded when they change, so a `.py` (or a `__pycache__/*.pyc`) the server's user could plant would run within a second.
-  - A directory an app writes to, such as the one its uploads are saved in, belongs to `cypache` with mode 750, outside the static root (where an uploaded `.html` or `.svg` would be served as the site's own) and outside the code. It has to be listed in `ReadWritePaths=` (`systemctl edit cypache`); everything else is read-only to the server, and `save()` fails with `EROFS` there.
+  - A directory an app writes to, such as the one its uploads are saved in, belongs to `cypache` with mode 750, outside the static root (where an uploaded `.html` or `.svg` would be served as the site's own) and outside the code. In `/var/www/sites` that's all it takes, since the unit lets the server write there wherever file permissions do. Anywhere else is read-only to the server, and `save()` fails with `EROFS`, unless the directory is listed in `ReadWritePaths=` (`systemctl edit cypache`).
+  - **Hardening:** in `/var/www/sites`, only file permissions keep the server from the code, so a site chowned to `cypache` by mistake is code a compromised handler can change. To leave the server only the directories apps write to, run `systemctl edit cypache` and put this above the line it says is discarded, `[Service]` included:
+    ```ini
+    [Service]
+    ReadWritePaths=
+    ReadWritePaths=/var/www/sites/example.com/uploads
+    ```
+    The empty `ReadWritePaths=` drops the unit's `/var/www/sites`; the lines after it list the directories, which must exist, or the server doesn't start. Then `systemctl restart cypache` (a reload keeps the old sandbox), and `systemctl show cypache -p ReadWritePaths` shows what it got.
 - **The unit** (`tools/cypache.service`):
   - runs as `cypache`, with no privilege but binding ports 80 and 443 (`CAP_NET_BIND_SERVICE`, and `SocketBindAllow=` for those two ports only, so code the server runs can't take another privileged port), and `NoNewPrivileges`. A config with other ports changes `SocketBindAllow=`;
-  - sees the system read-only and no home directories, except `/var/log/cypache` (mode 750) and its own private `/tmp`, `/var/tmp` (where spool files go) and `/dev/shm`. So a compromised handler can't change the code, the config, certificates or static files;
+  - sees the system read-only and no home directories, except `/var/www/sites` (where file permissions decide, see Sites), `/var/log/cypache` (mode 750) and its own private `/tmp`, `/var/tmp` (where spool files go) and `/dev/shm`. So a compromised handler can't change the config or certificates, nor code and static files that belong to root;
   - can't see other processes, devices, or kernel tunables, modules and logs, nor set the clock or the hostname;
   - has IPv4, IPv6 and Unix sockets only, and the system calls of `@system-service` without privileged ones, io_uring, keyrings, reading or writing other processes' memory (`process_vm_readv`, `process_vm_writev`), and changing priorities, scheduling or resource limits (`os.nice()` fails with `EPERM`);
   - can't make memory writable and executable (`MemoryDenyWriteExecute`). Python and Cypache don't need that; a library with a JIT, or ctypes callbacks, may, and then needs the line removed;
@@ -396,8 +393,8 @@ tools/build-deb                                   # prints the dist/cypache_<ver
 apt install ./dist/cypache_<version>_amd64.deb    # as root, where it runs
 ```
 
-- **What it installs:** what the steps above do, the man pages `cypache(8)`, `cypache-config(5)` and `cypache-apps(7)` (from `man/`), with the unit in `/usr/lib/systemd/system`, the `cypache` user from `/usr/lib/sysusers.d/cypache.conf`, and the `tls` module loaded at install and at boot (`/usr/lib/modules-load.d/cypache.conf`).
-- **Refusals:** it doesn't install where `/opt`, `/etc/cypache`, `/var/www/acme` or `/var/www/sites` isn't root's or is writable by others, since root writes into them (the deploy hook, certbot) or the server runs the code in them, and warns about such a `/var/www`. A first install refuses an existing `/opt/cypache`: remove a manual install first. A manual install's `/etc/systemd/system/cypache.service` would hide the package's unit, with its hardening, so it's warned about; make changes with `systemctl edit cypache` instead.
+- **What it installs:** what `tools/install` does, with Cypache and fastepoll from the build, the man pages `cypache(8)`, `cypache-config(5)` and `cypache-apps(7)` (from `man/`), with the unit in `/usr/lib/systemd/system`, the `cypache` user from `/usr/lib/sysusers.d/cypache.conf`, and the `tls` module loaded at install and at boot (`/usr/lib/modules-load.d/cypache.conf`).
+- **Refusals:** it doesn't install where `/opt`, `/etc/cypache`, `/var/www/acme` or `/var/www/sites` isn't root's or is writable by others, since root writes into them (the deploy hook, certbot) or the server runs the code in them, and warns about such a `/var/www`. A first install refuses an existing `/opt/cypache`: remove one from `tools/install` first. Its `/etc/systemd/system/cypache.service` would hide the package's unit, with its hardening, so it's warned about; make changes with `systemctl edit cypache` instead.
 - **Starting:** a first install enables and starts the server, like nginx's or Apache's; another server on port 80 keeps it retrying until that port is free. An upgrade restarts it if it's enabled or running. Without `/etc/cypache/config.py` (deleted), nothing starts.
 - **Removing** stops and disables the server, also for a later reinstall, and purging deletes `/var/log/cypache`. `/etc/cypache` (the config, the certificate copies) and the `cypache` user stay.
 - **Python** is the system's, the development venv's version (`python3.14`), so its security updates come with the system's; a bundled Python's would be ours to ship. A new Python minor version needs a new build.
@@ -447,7 +444,7 @@ LD_PRELOAD="$(g++ -print-file-name=libasan.so) $(g++ -print-file-name=libstdc++.
 The source is closed: distribute release wheels only, never an sdist.
 
 - **`tools/release [commit]`** builds the release wheels from a commit (HEAD by default), one per Python from 3.12 to 3.15 (`CYPACHE_BUILD=release`: the Python modules but `__init__` and `__main__` are compiled too, libstdc++ is linked in, `manylinux_2_34`). It checks each with `tools/check-wheel` (no source, stripped, only `PyInit_` exported, glibc 2.34 at most, no library but the system's libnghttp2), installs it with the pinned fastepoll wheel, and runs the commit's tests against it (`CYPACHE_TEST_INSTALLED=1`). The wheels go to `dist/release/`. Pythons other than the system's 3.14 come from fastepoll's `tools/pythons.sh`.
-- **`tools/publish fastepoll|cypache|all`** publishes a release: it stages it in `publish/`, shows what goes where, and once you answer y uploads the wheels to PyPI (fastepoll's first, as Cypache depends on it; an upload can't be undone), tags the release commit and pushes the tag, and pushes the public repository github.com/Source61/<name>, tagged too. For fastepoll it takes the wheel fastepoll's `tools/release.sh` built; for Cypache it runs `tools/release` for HEAD. A release is of HEAD in a tree without uncommitted changes, with a final version PyPI doesn't have yet. The public repositories get the README and LICENSE, and Cypache's also the man pages and the files from `tools/` the Debian package installs, for installs by hand; no source. Once: `.venv/bin/pip install twine`, and make github.com/Source61/cypache on github.com, empty.
+- **`tools/publish fastepoll|cypache|all`** publishes a release: it stages it in `publish/`, shows what goes where, and once you answer y uploads the wheels to PyPI (fastepoll's first, as Cypache depends on it; an upload can't be undone), tags the release commit and pushes the tag, and pushes the public repository github.com/Source61/<name>, tagged too. For fastepoll it takes the wheel fastepoll's `tools/release.sh` built; for Cypache it runs `tools/release` for HEAD. A release is of HEAD in a tree without uncommitted changes, with a final version PyPI doesn't have yet. The public repositories get the README and LICENSE, and Cypache's also the man pages, `tools/install` and the files it installs or runs; no source. **`tools/publish files`** pushes just those files, as HEAD has them, to github.com/Source61/cypache as an untagged commit, with no release: for the README and `tools/` between releases, while `src/` is still as its version's tag has it. Once: `.venv/bin/pip install twine`, and make github.com/Source61/cypache on github.com, empty.
 
 ## Benchmarks
 
