@@ -3,7 +3,7 @@ themselves, a second or so after saving, and so do new sites and their new folde
 
 Each folder in /var/www/sites is a site, named after its host:
   /var/www/sites/example.com/public/        static files, served as they are
-  /var/www/sites/example.com/controllers/   Python: controllers/news.py answers /news (README: Apps)
+  /var/www/sites/example.com/controllers/   Python: controllers/news.py answers /news (cypache-apps(7))
   /var/www/sites/example.com/views/         the controllers' views
   /var/www/sites/example.com/example/       the site's own package, for its controllers to import
 It answers for example.com and www.example.com. A folder named default, or a symlink to a site's, answers for any other
@@ -11,7 +11,7 @@ name; until there's a site at all, a page says Cypache works. The sites share on
 module) needs a name of its own: one that Python or an installed package already has stops the config, and one that
 another site has too (each site's serve.py, say) fails when imported.
 
-HTTPS: once a site answers over HTTP, get its certificate, and it's served over HTTPS (README: Certbot):
+HTTPS: once a site answers over HTTP, get its certificate, and it's served over HTTPS (cypache(8), HTTPS):
   certbot certonly --webroot -w /var/www/acme -d example.com -d www.example.com --deploy-hook /opt/cypache/tools/certbot-deploy-hook
 
 Errors: systemctl status cypache, journalctl -u cypache. Logs: /var/log/cypache/access.log.
@@ -56,5 +56,5 @@ if not sites:
   sites.append(cypache.Site(root="/usr/share/cypache/welcome", default=True))
 sys.meta_path.insert(0, Shared())
 
-# Other options, such as maxBodyBytes for uploads over 1 MiB: README, Options
+# Other options, such as maxBodyBytes for uploads over 1 MiB: cypache-config(5), OPTIONS
 cypache.serve(sites, http=80, https=443 if any(site.tls for site in sites) else None, acme="/var/www/acme", accessLog="/var/log/cypache/access.log", watch=folders)

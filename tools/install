@@ -1,6 +1,6 @@
 #!/bin/sh
 # tools/install, as root on Ubuntu or Debian: installs Cypache from PyPI as a systemd service, with this repository's
-# unit, config, certbot deploy hook, log rotation and man pages, and starts it (README, Production). Run again from an
+# unit, config, certbot deploy hook, log rotation and man pages, and starts it (cypache(8)). Run again from an
 # updated clone (git pull), it upgrades Cypache and those files, restarting the server if it runs; the config and the
 # log rotation stay as they are, as do the sites.
 set -eu

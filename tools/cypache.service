@@ -14,7 +14,7 @@ RestartSec=2
 RestartSteps=6
 RestartMaxDelaySec=60
 TimeoutStopSec=20
-# SIGTERM to the reload launcher only, which passes it on once (README, Production)
+# SIGTERM to the reload launcher only, which passes it on once (cypache(8), SIGNALS)
 KillMode=mixed
 LimitNOFILE=65536
 UMask=0027
@@ -30,7 +30,7 @@ SocketBindDeny=any
 NoNewPrivileges=yes
 
 # A read-only system, except the sites (where file permissions decide), the log directory and a private /tmp, /var/tmp
-# (spool files) and /dev/shm. Hardening the sites to the directories apps write to: README, Production
+# (spool files) and /dev/shm. Hardening the sites to the directories apps write to: cypache(8), SECURITY
 ProtectSystem=strict
 ReadWritePaths=-/var/www/sites
 ProtectHome=yes

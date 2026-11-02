@@ -15,7 +15,7 @@ unsafe() {
 }
 
 if [ "$1" = install ] && [ -z "$2" ] && { [ -e /opt/cypache ] || [ -L /opt/cypache ]; }; then
-  fail "/opt/cypache is there already, from a manual install? Remove it first (README, Production)"
+  fail "/opt/cypache is there already, from a manual install? Remove it first"
 fi
 for dir in /opt /etc/cypache /var/www/acme /var/www/sites; do
   if { [ -e $dir ] || [ -L $dir ]; } && unsafe $dir; then

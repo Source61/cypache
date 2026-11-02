@@ -21,7 +21,9 @@ described in
 .BR cypache\-config (5).
 The Python side of a site, its handlers, apps and views, is in
 .BR cypache\-apps (7).
-Installed as a service, it runs
+Installed as a service with
+.B tools/install
+(see INSTALL), it runs
 .I /etc/cypache/config.py
 as the
 .B cypache
@@ -33,6 +35,44 @@ Cypache is strict by design.
 A request that a proxy or firewall in front could read differently is refused, or redirected to its one clean form;
 static files are confined to their root by the kernel;
 and every limit and timeout has a safe default and can't be turned off.
+.SH INSTALL
+As root, on Ubuntu or Debian:
+.PP
+.EX
+git clone https://github.com/Source61/cypache && cypache/tools/install
+.EE
+.PP
+.B tools/install
+installs
+.BR python3\-venv ,
+.B certbot
+and
+.B libnghttp2\-14
+from apt, the
+.B cypache
+user, and Cypache from PyPI in
+.IR /opt/cypache/venv .
+From the clone's
+.I tools/
+and
+.IR man/ ,
+it installs the unit, the configuration, the certbot deploy hook, the log rotation and the welcome page (see FILES), and the man pages in
+.IR /usr/local/share/man .
+It makes
+.I /var/www/acme
+and
+.IR /var/www/sites ,
+loads the kernel's
+.B tls
+module at once and at boot, and enables and starts the server.
+It refuses to run where Cypache is installed from its Debian package, and where a directory it checks isn't root's alone (see SECURITY).
+.PP
+To upgrade, run it again after
+.B git pull
+in the clone.
+It upgrades Cypache from PyPI, replaces the unit, the deploy hook, the welcome page and the man pages, and restarts the server if it runs.
+The configuration and the log rotation stay as they are; changes to the unit belong in
+.BR "systemctl edit cypache" .
 .SH SITES
 The default configuration serves each folder in
 .I /var/www/sites
@@ -63,14 +103,13 @@ A
 folder is no site.
 Any other folder whose name isn't a host name stops the configuration with an error.
 .IP \(bu 2
-The sites' folders are on one Python import path, so a site's package (or module) needs a name of its own:
-one that Python has stops the configuration, and one that another site has too, such as a
-.I serve.py
-in each, fails when imported.
-One that another site's package, or one of Python's or the installed ones, already has stops the configuration with an error,
-rather than let one site's
+The sites' folders are on one Python import path, so a site's package (or module) needs a name of its own.
+One that Python or an installed package has stops the configuration with an error, rather than let the site's
 .B import
-load another's code.
+load the wrong module.
+One that another site has too, such as a
+.I serve.py
+in each, is fine until something imports it: that import fails, rather than load another site's code.
 .IP \(bu 2
 A site is served over HTTPS as soon as its certificate is in
 .IR /etc/cypache/tls/ name
@@ -124,12 +163,34 @@ The deploy hook checks that certificate and key match, copies them for the
 group into a new directory, and switches the symlink
 .IR /etc/cypache/tls/ name
 to it in one rename, so the server never reads a certificate and key from different renewals.
-Then it has Cypache reload its certificates, or restart for a name's first certificate.
+It keeps the previous pair and removes older ones.
+Then it has Cypache reload its certificates
+.RB ( "systemctl try\-reload\-or\-restart cypache" ),
+or for a name's first certificate restart
+.RB ( try\-restart ),
+so a configuration that looks for certificates by name, like the default one, serves it.
+Either leaves a stopped server alone.
 Pass it per certificate as above: in certbot's
 .I renewal\-hooks/deploy
 it would copy every certificate's key for the
 .B cypache
 group, also those of other services.
+.PP
+Certbot runs the hook as root on every renewal, so the hook, every directory above it,
+.I /etc/cypache
+and the webroot must be root's and writable by no one else.
+A
+.B cypache
+user that could change the hook would become root;
+one that could change the webroot could point certbot's root\-run writes elsewhere, for example by making it a symlink.
+The hook refuses to run if
+.I /etc/cypache
+or
+.I /etc/cypache/tls
+isn't root's, is a symlink, or is writable by its group or others.
+It also refuses if
+.IR /etc/cypache/tls/ name
+is a real directory rather than its symlink: move such a directory away once.
 .PP
 Over HTTPS, every response carries
 .B Strict\-Transport\-Security
@@ -140,7 +201,9 @@ to the same URL over HTTPS, except certbot's challenges in
 TLS is 1.2 and 1.3, with forward\-secret AEAD ciphers only, and post\-quantum hybrid key exchange where OpenSSL has it.
 On Linux 6.14 and later, with the kernel's
 .B tls
-module (the package loads it at boot), files go out with zero\-copy
+module
+.RB ( tools/install
+loads it at once and at boot), files go out with zero\-copy
 .BR sendfile ()
 through kernel TLS.
 .SH SIGNALS
@@ -149,7 +212,13 @@ through kernel TLS.
 Stop: open requests get
 .B shutdownTimeout
 (10 seconds) to finish, idle connections close at once.
-systemd kills what's left after 20 seconds.
+One without a request yet, or with part of a head, gets a second more: its request may be on its way.
+The handler threads don't hold up the exit.
+Over HTTP/2, the server sends GOAWAY, and streams already received finish.
+systemd kills what's left after 20 seconds: raise
+.B TimeoutStopSec=
+with
+.BR shutdownTimeout .
 .TP
 .B SIGHUP
 Load the certificates anew.
@@ -157,41 +226,93 @@ Load the certificates anew.
 .B SIGQUIT
 Stop at once, without waiting for requests.
 .PP
-The signals go to the main process, which passes them on to the server.
+The signals go to the main process alone
+.RB ( KillMode=mixed ),
+the reload launcher, which passes them on to the serving generation once.
+With
+.BR KillMode=control\-group ,
+the server would get a stop twice, and the second cuts requests off.
+Processes a handler left behind are killed once the server has stopped.
+A SIGINT from the terminal (Ctrl\-C) reaches the generation directly, and the launcher doesn't pass it on.
+A generation that ends by itself ends the launcher at once, with its exit status.
+On a stop, the ports stay open until the server is done: clients that connect meanwhile wait, and get a reset at the end.
 .SH SECURITY
 .IP \(bu 2
 The unit runs the server as
 .BR cypache ,
-with no privilege but binding ports 80 and 443, and no other ports
-.RB ( SocketBindAllow= ).
-It sees the system read\-only and no home directories, except
-.I /var/www/sites
-(where file permissions decide),
-.I /var/log/cypache
-and its own private
-.IR /tmp ,
-.I /var/tmp
+with no privilege but binding ports 80 and 443
+.RB ( CAP_NET_BIND_SERVICE ,
 and
-.IR /dev/shm .
-It can't see other processes or devices, and has the system calls of
-.B @system\-service
-without privileged ones.
+.B SocketBindAllow=
+for those two ports only, so code the server runs can't take another privileged port), and
+.BR NoNewPrivileges= .
 A config listening on other ports changes
 .BR SocketBindAllow= ,
 with
 .BR "systemctl edit cypache" .
 .IP \(bu 2
+It sees the system read\-only and no home directories, except
+.I /var/www/sites
+(where file permissions decide),
+.I /var/log/cypache
+(mode 750) and its own private
+.IR /tmp ,
+.I /var/tmp
+and
+.IR /dev/shm .
+It can't see other processes, devices, or kernel tunables, modules and logs, nor set the clock or the hostname.
+.IP \(bu 2
+It has IPv4, IPv6 and Unix sockets only, and the system calls of
+.B @system\-service
+without privileged ones, io_uring, keyrings, userfaultfd, reading or writing other processes' memory
+.RB ( process_vm_readv ,
+.BR process_vm_writev ),
+and changing priorities, scheduling or resource limits
+.RB ( os.nice()
+fails with
+.BR EPERM ).
+.IP \(bu 2
+It can't make memory writable and executable
+.RB ( MemoryDenyWriteExecute= ).
+Python and Cypache don't need that; a library with a JIT, or ctypes callbacks, may, and then needs the line removed.
+.IP \(bu 2
+It lacks
+.BR RestrictSUIDSGID= ,
+which blocks the
+.BR openat2 ()
+static files are opened with; a Site's
+.B root
+refuses to start where
+.BR openat2 ()
+fails, rather than answer 404.
+So code the server runs could leave a setuid or setgid file wherever it can write,
+which is why the directories it writes to are mode 750: other users can't reach it there.
+.IP \(bu 2
+It allows 65536 open files
+.RB ( LimitNOFILE= ),
+enough for
+.B maxConnections
+up to 16368.
+.IP \(bu 2
+Sites can live anywhere outside
+.IR /home ,
+given a configuration that names them.
 Code and static files belong to root and are writable by no one else, nor are the directories above them:
 a
 .B .py
+(or a
+.IR __pycache__/*.pyc )
 the server's user could plant would run within a second.
-The package refuses to install where
+.B tools/install
+refuses to run where
 .IR /opt ,
 .IR /etc/cypache ,
 .I /var/www/acme
 or
 .I /var/www/sites
-isn't root's or is writable by others.
+isn't root's or is writable by others, since root writes into them (the deploy hook, certbot) or the server runs the code in them,
+and warns about such a
+.IR /var/www .
 .IP \(bu 2
 A directory an application writes to, such as one for uploads, belongs to
 .B cypache
@@ -210,12 +331,13 @@ only file permissions keep the server from the code.
 Hardening it leaves the server only the directories applications write to:
 .B systemctl edit cypache
 with these lines above the one it says is discarded, then
-.BR "systemctl restart cypache" .
+.B systemctl restart cypache
+(a reload keeps the old sandbox).
 The empty
 .B ReadWritePaths=
 drops the unit's
 .IR /var/www/sites ;
-the directories listed after it must exist.
+the directories listed after it must exist, or the server doesn't start.
 .RS
 .PP
 .EX
@@ -223,10 +345,28 @@ the directories listed after it must exist.
 ReadWritePaths=
 ReadWritePaths=/var/www/sites/example.com/uploads
 .EE
+.PP
+.B systemctl show cypache \-p ReadWritePaths
+shows what it got.
 .RE
 .IP \(bu 2
-The server's processes aren't dumpable: other processes of its user can't attach to them or read their memory or open files.
+Importing
+.B cypache
+makes the process non\-dumpable
+.RB ( PR_SET_DUMPABLE ),
+and so the server, its workers, the reload launcher and the generations it forks.
+Like any process, the server is dumpable at its start, until the configuration imports
+.BR cypache ,
+and with reload the launcher once more after it takes the process's place: some tens of milliseconds at each start, none at reloads.
+Other processes of its user, such as a program a handler runs, can't attach to them, nor read their memory, environment or open files (request bodies, spool files) through
+.IR /proc .
 Debug or profile them as root.
+There are no core dumps, and the server can't change its own
+.I /proc/self
+settings such as
+.BR oom_score_adj :
+use the unit's
+.BR OOMScoreAdjust= .
 .IP \(bu 2
 Every site's code runs in the same worker processes, and those hold every site's TLS private key.
 Code one site runs can read the other sites' data and keys:
@@ -247,7 +387,7 @@ Errors, handler tracebacks and stuck handlers go to the journal:
 The server runs the system's Python, and its venv sees the system's packages, so a site's libraries come from apt with the system's security updates:
 .PP
 .EX
-apt install python3\-pymysql python3\-pil python3\-bcrypt
+apt install python3\-pymysql python3\-pil python3\-bcrypt python3\-magic
 .EE
 .PP
 A library the distribution doesn't package goes into the venv, and is then updated by hand:
@@ -255,6 +395,12 @@ A library the distribution doesn't package goes into the venv, and is then updat
 .EX
 /opt/cypache/venv/bin/python \-I \-m pip install \fIname\fP
 .EE
+.PP
+Without
+.BR \-I ,
+root would run a
+.I pip.py
+from the current directory.
 .SH FILES
 .TP
 .I /etc/cypache/config.py
@@ -286,15 +432,21 @@ The server, fastepoll and their Python environment.
 .I /opt/cypache/tools/certbot\-deploy\-hook
 The certbot deploy hook.
 .TP
-.I /usr/lib/systemd/system/cypache.service
+.I /etc/systemd/system/cypache.service
 The unit; change it with
-.BR "systemctl edit cypache" .
+.BR "systemctl edit cypache" ,
+since upgrades replace it.
 .TP
 .I /etc/logrotate.d/cypache
 The access log's rotation.
 .TP
-.I /usr/share/doc/cypache/README.md
-The complete documentation.
+.I /usr/share/cypache/welcome/
+The page that says Cypache works, until there's a site.
+.TP
+.I /etc/modules\-load.d/tls.conf
+Loads the kernel's
+.B tls
+module at boot.
 .SH SEE ALSO
 .BR cypache\-config (5),
 .BR cypache\-apps (7),

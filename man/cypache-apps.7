@@ -61,7 +61,7 @@ makes a redirect (301, 302, 303, 307 or 308); characters a URL can't hold, non\-
 .PP
 An exception in a handler, or an invalid return value, gives the client a plain
 .B 500
-and prints the traceback to stderr, the journal under systemd (at most 10 per 10 seconds per worker).
+and prints the traceback to stderr, the journal under systemd (at most 10 per 10 seconds per worker; the rest are counted).
 Raising
 .B cypache.BadRequest
 gives
@@ -145,6 +145,15 @@ are free for the handlers along one request to share; the ones above are read\-o
 .B status
 and
 .BR contentType .
+.PP
+.BR params ,
+.BR view() ,
+.B dispatch()
+and
+.B stop()
+are for apps only (see APPS), not for
+.B routes
+handlers.
 .SH APPS
 .EX
 controllers/            Site(apps=...)
@@ -191,7 +200,9 @@ handles the request, and HEAD uses
 Only functions the module defines itself count, so an imported
 .B get
 is no handler, and a decorator must keep the function's identity with
-.BR functools.wraps .
+.BR functools.wraps ,
+or the wrapper looks imported and the method gets
+.BR 405 .
 Other methods get
 .B 405
 (OPTIONS
@@ -273,6 +284,9 @@ Symlinks are refused, as is a
 next to a
 .IB name /
 directory.
+A module is loaded from exactly its
+.IB name .py\c
+, never from a compiled module of the same name next to it.
 .TP
 Static files first
 A file under the Site's static root is served without any
@@ -284,6 +298,9 @@ Handlers run in a pool of threads in each worker
 .RB ( serve(threads=16) ),
 so one waiting on a database doesn't hold up the worker's other connections.
 They run concurrently: module\-level state, such as a cache dict or a shared database connection, is shared between requests, so use thread\-safe objects or locks, or a connection per thread.
+Code ported from PHP's one\-request\-at\-a\-time model needs a check for this.
+.IP \(bu 2
+Python's thread switch interval is set to 1 ms, so a CPU\-bound handler can't hold up the event loop for the default 5 ms.
 .IP \(bu 2
 A handler, or a view's
 .BR render ,
@@ -292,6 +309,13 @@ that never blocks can be marked
 to run on the worker's event loop instead, which is faster.
 An apps walk starts on the loop if its first handler is marked, and moves to the pool at the first handler or view that isn't.
 .IP \(bu 2
+While a handler runs, its connection keeps what the client sends, up to
+.BR maxHeaderBytes ,
+and answers it afterwards, in order.
+Its request body stays counted against
+.B maxBodyMemory
+until the handler is done.
+.IP \(bu 2
 With 16 jobs per thread already waiting, a request gets
 .BR 503 .
 A job doesn't run if its connection is gone when its turn comes.
@@ -299,8 +323,10 @@ A job doesn't run if its connection is gone when its turn comes.
 A thread can't be stopped from outside, so a handler that hangs keeps its thread.
 Past
 .B handlerTimeout
-(120 seconds) the worker prints where it's stuck, once.
-When all of a worker's threads are stuck, it shuts down, and fastepoll starts a fresh one (with
+(120 seconds) the worker prints where it's stuck, with a stack trace, once.
+When all of a worker's threads are stuck, it shuts down as on SIGTERM: other connections finish, the stuck ones are cut at
+.BR shutdownTimeout ,
+and fastepoll starts a fresh worker (with
 .BR workers=1 ,
 the server exits).
 .IP \(bu 2
@@ -308,7 +334,8 @@ A process forked in a handler must end with
 .BR os._exit() ;
 one that returns into the server is ended with a message.
 .IP \(bu 2
-Over HTTPS, a client that half\-closes its connection while its handler runs gets no response, since TLS has no half\-close; the access log shows
+A client that half\-closes its connection while its handler runs still gets its answer over plain HTTP, so its job runs.
+Over HTTPS it gets none, since TLS has no half\-close; the access log shows
 .BR 499 .
 .SH UPLOADS
 A site that takes uploads raises
@@ -322,9 +349,16 @@ A body over
 would read it all into memory; read
 .B request.stream
 or the uploads instead.
+The spool file counts against
+.B maxSpoolBytes
+for as long as it's open, until nothing holds the request, or an
+.B Upload
+from it, anymore.
 An urlencoded
 .B form
-is parsed in memory, and limited to 1 MiB.
+is parsed in memory, and limited to 1 MiB
+.RB ( 400
+beyond).
 .PP
 An
 .B Upload
@@ -334,7 +368,8 @@ has:
 The form field's name, and the file's type and size.
 .TP
 .B filename
-The client's name for the file, without directories, control or bidi characters.
+The client's name for the file, without directories (nor slashes NFKC normalization would make), control or bidi characters.
+A name of only dots and spaces, also after NFKC normalization, counts as none.
 Never use it as a path on the server.
 .TP
 .BR read() ", " open()
@@ -343,9 +378,13 @@ The file's bytes, or a read\-only file object over them.
 .BI save( path ", mode=0o640)"
 Writes the file to
 .IR path ,
-which must not exist yet: nothing there is overwritten or followed, a symlink included.
+which must not exist yet: nothing there is overwritten or followed, a symlink included; the directories leading there are followed.
 It's written unnamed and then linked into place, so it appears whole or not at all, and a spooled file is copied in the kernel.
-It refuses a path among the code, where the file would run: in any Site's apps or views, in the directory of other code the server loaded, or in a directory on Python's import path.
+The filesystem must support
+.BR O_TMPFILE .
+It refuses a path among the code, where the file would run: in any Site's apps or views, in the directory of other code the server loaded, or in a directory on Python's import path
+.RB ( sys.path ),
+such as a site's folder in the default configuration.
 Keep the directory outside the static root too, where an uploaded
 .I .html
 would be served as the site's own.
@@ -362,14 +401,67 @@ elsewhere
 fails with
 .BR EROFS .
 .PP
+Copies of an
+.B Upload
+share its spool file, and one from a spool file can't be pickled.
+.PP
 The multipart parser is strict: anything a parser in front, such as a firewall, could read differently gets
 .BR 400 .
-The body must start with its boundary, which may appear only as a delimiter line of its own;
-parameters follow RFC 9110 strictly;
-each part has one
+.IP \(bu 2
+The body starts with its boundary, which appears only as a delimiter line of its own (after a CRLF), with nothing after the last one but a CRLF.
+A form with no entries
+.RB ( \-\-boundary\-\- )
+is fine.
+.IP \(bu 2
+The request has one
+.BR Content\-Type .
+Its parameters and those of
+.B Content\-Disposition
+follow RFC 9110:
+.B name=token
+or
+.BR name=\(dqquoted\(dq ,
+separated by
+.B ;
+with spaces, not tabs, around it.
+No whitespace around
+.BR = ,
+no repeated names, no
+.B *
+in a name, no
+.B \(aq
+or
+.B *
+in an unquoted value, and no quoted value ending in a backslash.
+.B filename*
+is allowed only unquoted, next to
+.B filename
+and with the same name.
+.IP \(bu 2
+Each part has one
 .B form\-data
-disposition with a UTF\-8 name;
-and there are at most 1000 parts, with 16 KiB of header fields each, and 1 MiB of part headers and plain fields together.
+disposition with a UTF\-8 name, no control characters but tabs in its header fields, and no
+.B Content\-Transfer\-Encoding
+but
+.BR 7bit ,
+.B 8bit
+or
+.BR binary .
+Its
+.B Content\-Type
+is a
+.I type/subtype
+other than
+.B multipart/*
+or
+.BR message/* ,
+has no
+.B name
+parameter, and for a plain field, no charset but UTF\-8 or US\-ASCII.
+A file with content has a filename; a file input left empty is left out.
+.IP \(bu 2
+At most 1000 parts, with 16 KiB of header fields each, and 1 MiB of part headers and plain fields together.
+.PP
 Some clients' uploads get
 .B 400
 because of this: a filename ending in a backslash, a
@@ -379,6 +471,17 @@ sent as
 (Go's
 .BR mime/multipart ,
 aiohttp), or a non\-ASCII filename from .NET.
+Names and filenames are kept as sent: the
+.BR %22 ,
+.B %0A
+and
+.B %0D
+browsers send for
+.BR \(dq ,
+LF and CR aren't decoded, and backslashes are literal.
+The parser runs at first use, in the handler's thread, so an
+.B @cypache.inline
+handler mustn't read a large form.
 .PP
 A body must keep arriving at
 .B minBodyRate
@@ -428,6 +531,3 @@ def post(request):
 .SH SEE ALSO
 .BR cypache (8),
 .BR cypache\-config (5)
-.PP
-.I /usr/share/doc/cypache/README.md
-has the complete documentation.
