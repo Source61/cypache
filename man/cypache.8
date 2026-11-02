@@ -63,7 +63,10 @@ A
 folder is no site.
 Any other folder whose name isn't a host name stops the configuration with an error.
 .IP \(bu 2
-The sites' folders are on one Python import path, so a site's package (or module) needs a name of its own.
+The sites' folders are on one Python import path, so a site's package (or module) needs a name of its own:
+one that Python has stops the configuration, and one that another site has too, such as a
+.I serve.py
+in each, fails when imported.
 One that another site's package, or one of Python's or the installed ones, already has stops the configuration with an error,
 rather than let one site's
 .B import
