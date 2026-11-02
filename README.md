@@ -27,7 +27,7 @@ Run it as an unprivileged user: handlers run with the server's privileges. The c
 
 ## Install
 
-`pip install cypache` in a virtual environment, which installs fastepoll too. The wheels are for CPython 3.12 to 3.15 on Linux x86-64 with glibc 2.34 or newer, OpenSSL 3 and libnghttp2 1.60 or newer (`libnghttp2-14`; Debian 13 has 1.64), which stay the system's, so their security updates apply. For a server, the Debian package (see Production) sets everything up.
+`pip install cypache` in a virtual environment, which installs fastepoll too. The wheels are for CPython 3.12 to 3.15 on Linux x86-64 with glibc 2.34 or newer, OpenSSL 3 and libnghttp2 1.60 or newer (`libnghttp2-14`; Debian 13 has 1.64), which stay the system's, so their security updates apply. For a server, see Production.
 
 ## Sites
 
@@ -335,7 +335,7 @@ Clients that really send `maxBodyMemory` (or `maxSpoolBytes`) worth of body byte
 
 ## Production
 
-Install the Debian package (below) as root, and Cypache runs on ports 80 and 443 with its config, `/etc/cypache/config.py` (`tools/config.py`). Its man pages cover this too: `man cypache` for running it, `man cypache-config` for the config, `man cypache-apps` for the sites' Python. That config serves each folder in `/var/www/sites` as a site, named after its host:
+Installed as below, as root, Cypache runs as a systemd service on ports 80 and 443 with its config, `/etc/cypache/config.py` (`tools/config.py`). Its man pages cover this too: `man cypache` for running it, `man cypache-config` for the config, `man cypache-apps` for the sites' Python. That config serves each folder in `/var/www/sites` as a site, named after its host:
 
 ```
 /var/www/sites/example.com/public/        static files
@@ -351,14 +351,14 @@ Install the Debian package (below) as root, and Cypache runs on ports 80 and 443
 - **HTTPS:** once a site answers over plain HTTP, get its certificate (see Certbot). The deploy hook restarts Cypache for a name's first certificate, and from then on the site is served over HTTPS, with plain HTTP redirected to it.
 - **The config** is Python, root's (mode 644, or 640 with group `cypache` if it holds secrets), run at every start. Other options go into its `serve()` (see Options), such as `maxBodyBytes` for uploads over 1 MiB. Upgrades keep your changes to it.
 
-By hand, on Ubuntu or Debian with Python 3.14, from the Cypache and fastepoll wheels and this repository's `tools/`:
+On Ubuntu or Debian, from PyPI and this repository's `tools/` and `man/`:
 
 ```sh
 apt install python3-venv certbot libnghttp2-14
 umask 022 # what the cypache user must read
 useradd --system --user-group --home-dir /nonexistent --shell /usr/sbin/nologin cypache
 python3 -m venv --system-site-packages /opt/cypache/venv
-/opt/cypache/venv/bin/pip install fastepoll-*.whl cypache-*.whl
+/opt/cypache/venv/bin/pip install cypache
 install -D -m 755 tools/certbot-deploy-hook /opt/cypache/tools/certbot-deploy-hook
 install -m 644 tools/cypache.service /etc/systemd/system/
 install -m 644 tools/cypache.logrotate /etc/logrotate.d/cypache
@@ -402,7 +402,7 @@ apt install ./dist/cypache_<version>_amd64.deb    # as root, where it runs
 - **Removing** stops and disables the server, also for a later reinstall, and purging deletes `/var/log/cypache`. `/etc/cypache` (the config, the certificate copies) and the `cypache` user stay.
 - **Python** is the system's, the development venv's version (`python3.14`), so its security updates come with the system's; a bundled Python's would be ours to ship. A new Python minor version needs a new build.
 - **Other distros:** a package runs on the distro it was built on, with its Python, and so do the sites it serves: a site with t-strings needs Python 3.14, so not Debian 13's. `tools/distro-deb debian13 [commit]` runs the commit's tests on Debian 13 (Python 3.13), then builds its package there, into `dist/debian13/`. Debian 13 is unpacked from its Docker Hub image into `~/.cache/cypache-distros` and run with bubblewrap, without root; the build has no network.
-- **Versions** are Cypache's, the commit's time (UTC), the commit and the distro built on, such as `0.1.0~dev0+20261028142208.dd61c3e+debian13`, so a later commit's package upgrades an earlier one's, also from an apt repository, and an older commit built later doesn't. Each distro's package of a commit has its own version, as its contents differ. A new fastepoll wheel comes with a commit of its checksum.
+- **Versions** are Cypache's, the commit's time (UTC), the commit and the distro built on, such as `0.1.0~dev0+20261028142208.dd61c3e+debian13`, so a later commit's package upgrades an earlier one's, and an older commit built later doesn't. Each distro's package of a commit has its own version, as its contents differ. A new fastepoll wheel comes with a commit of its checksum.
 
 ## What the parser refuses
 
@@ -447,7 +447,7 @@ LD_PRELOAD="$(g++ -print-file-name=libasan.so) $(g++ -print-file-name=libstdc++.
 The source is closed: distribute release wheels only, never an sdist.
 
 - **`tools/release [commit]`** builds the release wheels from a commit (HEAD by default), one per Python from 3.12 to 3.15 (`CYPACHE_BUILD=release`: the Python modules but `__init__` and `__main__` are compiled too, libstdc++ is linked in, `manylinux_2_34`). It checks each with `tools/check-wheel` (no source, stripped, only `PyInit_` exported, glibc 2.34 at most, no library but the system's libnghttp2), installs it with the pinned fastepoll wheel, and runs the commit's tests against it (`CYPACHE_TEST_INSTALLED=1`). The wheels go to `dist/release/`. Pythons other than the system's 3.14 come from fastepoll's `tools/pythons.sh`.
-- **`tools/publish fastepoll|cypache|all`** publishes a release: it stages it in `publish/`, shows what goes where, and once you answer y uploads the wheels to PyPI (fastepoll's first, as Cypache depends on it; an upload can't be undone), tags the release commit and pushes the tag, pushes the public repository github.com/Source61/<name>, tagged too, and adds HEAD's `.deb`s to the apt repository (`tools/apt-repo`). For fastepoll it takes the wheel fastepoll's `tools/release.sh` built; for Cypache it runs `tools/release` for HEAD. A release is of HEAD in a tree without uncommitted changes, with a final version PyPI doesn't have yet. The public repositories get the README and LICENSE, and Cypache's also the man pages and the files from `tools/` the Debian package installs, for installs by hand; no source. Once: `.venv/bin/pip install twine`, and make github.com/Source61/cypache on github.com, empty.
+- **`tools/publish fastepoll|cypache|all`** publishes a release: it stages it in `publish/`, shows what goes where, and once you answer y uploads the wheels to PyPI (fastepoll's first, as Cypache depends on it; an upload can't be undone), tags the release commit and pushes the tag, and pushes the public repository github.com/Source61/<name>, tagged too. For fastepoll it takes the wheel fastepoll's `tools/release.sh` built; for Cypache it runs `tools/release` for HEAD. A release is of HEAD in a tree without uncommitted changes, with a final version PyPI doesn't have yet. The public repositories get the README and LICENSE, and Cypache's also the man pages and the files from `tools/` the Debian package installs, for installs by hand; no source. Once: `.venv/bin/pip install twine`, and make github.com/Source61/cypache on github.com, empty.
 
 ## Benchmarks
 
