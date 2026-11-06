@@ -28,6 +28,9 @@ for dir in "$etc" "$tls"; do
 done
 [ -L "$tls/$name" ] || [ ! -e "$tls/$name" ] || fail "$tls/$name must be the symlink this hook keeps there: move the directory away once"
 cert=$(openssl x509 -noout -pubkey -in "$RENEWED_LINEAGE/fullchain.pem") && key=$(openssl pkey -pubout -in "$RENEWED_LINEAGE/privkey.pem") && [ -n "$cert" ] && [ "$cert" = "$key" ] || fail "the certificate and key in $RENEWED_LINEAGE don't load or don't match"
+# The default config gives a certificate to the site it's named after alone, whose names are <name> and www.<name>
+others=$(openssl x509 -noout -ext subjectAltName -in "$RENEWED_LINEAGE/fullchain.pem" | tr ',' '\n' | sed -n 's/^ *DNS://p' | grep -v -x -F -e "$name" -e "www.$name" | tr '\n' ' ' || true)
+[ -z "$others" ] || echo "certbot-deploy-hook: the default config serves this certificate to the site $name only, not to ${others% }: get each site a certificate of its own, named after it (certbot certonly ... -d example.com -d www.example.com)" >&2
 [ -d "$etc" ] || install -d -m 0755 -o root -g root "$etc"
 [ -d "$tls" ] || install -d -m 0750 -o root -g "$group" "$tls"
 

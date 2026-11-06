@@ -6,12 +6,15 @@ Each folder in /var/www/sites is a site, named after its host:
   /var/www/sites/example.com/controllers/   Python: controllers/news.py answers /news (cypache-apps(7))
   /var/www/sites/example.com/views/         the controllers' views
   /var/www/sites/example.com/example/       the site's own package, for its controllers to import
-It answers for example.com and www.example.com. A folder named default, or a symlink to a site's, answers for any other
-name; until there's a site at all, a page says Cypache works. The sites share one import path, so a site's package (or
-module) needs a name of its own: one that Python or an installed package already has stops the config, and one that
-another site has too (each site's serve.py, say) fails when imported.
+It answers for example.com and www.example.com, unless www.example.com has a folder of its own (whose controllers/index.py
+can redirect to example.com, cypache(8), SITES). A folder named default answers for any other name; so does a site whose
+folder default is a symlink to (ln -s example.com default), over HTTPS too. Until there's a site at all, a page says
+Cypache works. The sites share one import path, so a site's package (or module) needs a name of its own: one that Python
+or an installed package already has stops the config, and one that another site has too (each site's serve.py, say)
+fails when imported.
 
-HTTPS: once a site answers over HTTP, get its certificate, and it's served over HTTPS (cypache(8), HTTPS):
+HTTPS: once a site answers over HTTP, get its certificate, and it's served over HTTPS (cypache(8), HTTPS). Each site
+needs one of its own: certbot names a certificate after its first -d, and it goes to the site of that name alone:
   certbot certonly --webroot -w /var/www/acme -d example.com -d www.example.com --deploy-hook /opt/cypache/tools/certbot-deploy-hook
 
 Errors: systemctl status cypache, journalctl -u cypache. Logs: /var/log/cypache/access.log.
@@ -34,10 +37,22 @@ class Shared:
       raise ImportError(f"{' and '.join(owners[name])} each have {name!r}; give it a name of its own")
 
 
+def aliased(names):
+  """The site whose folder default is a symlink to, which then answers for other names itself, with its certificate"""
+  try:
+    target = os.path.normpath(os.path.join(SITES, os.readlink(f"{SITES}/default")))
+  except OSError: # no symlink
+    return None
+  name = os.path.basename(target)
+  return name if os.path.dirname(target) == SITES and name in names and name != "default" else None
+
+
 sites, folders, owners = [], [SITES], {}
-for name in sorted(os.listdir(SITES)):
+names = [name for name in sorted(os.listdir(SITES)) if not name.startswith(".") and name != "lost+found" and os.path.isdir(f"{SITES}/{name}")] # lost+found: /var/www/sites as a filesystem of its own
+alias = aliased(names)
+for name in names:
   path = f"{SITES}/{name}"
-  if name.startswith(".") or name == "lost+found" or not os.path.isdir(path): # lost+found: /var/www/sites as a filesystem of its own
+  if name == "default" and alias:
     continue
   for module in pkgutil.iter_modules([path]):
     found = None if module.name in owners else importlib.util.find_spec(module.name)
@@ -50,8 +65,8 @@ for name in sorted(os.listdir(SITES)):
   if name == "default":
     sites.append(cypache.Site(default=True, **dirs))
   else:
-    hosts = (name,) if name.startswith(("www.", "[")) else (name, "www." + name)
-    sites.append(cypache.Site(*hosts, tls=folder(f"{TLS}/{name}"), **dirs))
+    hosts = (name,) if name.startswith(("www.", "[")) or f"www.{name}" in names else (name, "www." + name)
+    sites.append(cypache.Site(*hosts, tls=folder(f"{TLS}/{name}"), default=name == alias, **dirs))
 if not sites:
   sites.append(cypache.Site(root="/usr/share/cypache/welcome", default=True))
 sys.meta_path.insert(0, Shared())

@@ -4,15 +4,15 @@ A fast, security-first HTTP server for Python on Linux, written in Cython (C++ m
 
 ## Install
 
-A server, on Ubuntu or Debian, as root: Cypache as a systemd service on ports 80 and 443, serving each folder in `/var/www/sites` as a site named after its host:
+A server, on Debian or Ubuntu, as root: Cypache as a systemd service on ports 80 and 443, serving each folder in `/var/www/sites` as a site named after its host:
 
 ```sh
 git clone https://github.com/Source61/cypache && cypache/tools/install
 ```
 
-Run `tools/install` again after `git pull` in the clone to upgrade.
+It installs Cypache itself, from PyPI, into `/opt/cypache/venv`: there's nothing to `pip install` first. The sites run on the system's Python, which on Debian 13 is 3.13, so without t-strings (Python 3.14). Run `tools/install` again after `git pull` in the clone to upgrade.
 
-On its own, as a library: `pip install cypache` in a virtual environment, which installs fastepoll too. The wheels are for CPython 3.12 to 3.15 on Linux x86-64 with glibc 2.34 or newer, OpenSSL 3 and libnghttp2 1.60 or newer (`libnghttp2-14`), which stay the system's, so their security updates apply.
+On its own, as a library: `pip install cypache` in a virtual environment (`apt install python3-venv` on Debian and Ubuntu), which installs fastepoll too. The wheels are for CPython 3.12 to 3.15 on Linux x86-64 with glibc 2.34 or newer, OpenSSL 3 and libnghttp2 1.60 or newer (`libnghttp2-14`), which stay the system's, so their security updates apply.
 
 ## Quick start
 
@@ -24,7 +24,15 @@ echo "<h1>Hello</h1>" > /var/www/sites/example.com/public/index.html
 printf 'def get(request):\n  return "<h1>News</h1>"\n' > /var/www/sites/example.com/controllers/news.py
 ```
 
-`http://example.com/` is the static page and `/news` the handler, served a second or so after saving. For HTTPS, get a certificate with certbot (`man cypache`).
+`http://example.com/` is the static page and `/news` the handler, served a second or so after saving. Code that doesn't load is reported in `journalctl -u cypache`, and the previous code goes on serving. At a start (`systemctl restart cypache`, a reboot) there is none, so a site whose code doesn't load stops the server, for every site, until it's fixed.
+
+For HTTPS, get each site a certificate of its own once it answers over HTTP. It's served over HTTPS from then on, with plain HTTP redirected there:
+
+```sh
+certbot certonly --webroot -w /var/www/acme -d example.com -d www.example.com --deploy-hook /opt/cypache/tools/certbot-deploy-hook
+```
+
+Certbot names a certificate after its first `-d`, and it goes to the site of that name alone: one certificate for two sites leaves the second without HTTPS. `www.example.com` is the same site as `example.com`, unless it has a folder of its own, such as one that redirects to `example.com` (`man cypache`, SITES).
 
 As a library, a config is a Python script that builds its sites and calls `serve()`:
 

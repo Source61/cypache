@@ -89,12 +89,37 @@ A folder answers for its name and for
 .B www.\&
 its name; one whose name starts with
 .B www.\&
-or is an address in brackets answers for that name alone.
+or is an address in brackets answers for that name alone, and a
+.B www.\&
+folder takes its name from the other one.
+To redirect
+.I www.example.com
+to
+.IR example.com ,
+give it a folder of its own with this
+.IR controllers/index.py ,
+and a certificate of its own for HTTPS:
+.IP
+.EX
+import cypache
+from urllib.parse import quote
+
+def get(request):
+  query = "?" + request.query if request.query else ""
+  return cypache.redirect("https://example.com" + quote(request.path) + query, 301)
+.EE
 .IP \(bu 2
 A folder named
-.BR default ,
-or a symlink to a site's folder, answers for every other name, also for domains others point at the server.
-Without one, a request for an unknown name gets
+.B default
+answers for every other name, also for domains others point at the server.
+So does a site whose folder
+.I default
+is a symlink to
+.RB ( "ln \-s example.com default" ),
+over HTTPS too, with the site's certificate; a
+.I default
+folder of its own has none.
+Without either, a request for an unknown name gets
 .BR "421 Misdirected Request" .
 Until there's a site at all, a page says Cypache works.
 .IP \(bu 2
@@ -139,7 +164,9 @@ is picked up without a restart too.
 Other changes take a command:
 .TP
 .B systemctl restart cypache
-after changing the ports or addresses the configuration listens on.
+after changing the ports or addresses the configuration listens on, or pointing
+.I default
+at another site's folder.
 .TP
 .B systemctl reload cypache
 loads new certificates (SIGHUP) for new connections; open ones keep theirs.
@@ -156,6 +183,16 @@ Get a certificate once a site answers over plain HTTP:
 certbot certonly \-\-webroot \-w /var/www/acme \-d example.com \-d www.example.com \e
   \-\-deploy\-hook /opt/cypache/tools/certbot\-deploy\-hook
 .EE
+.PP
+Each site needs a certificate of its own.
+Certbot names a certificate after its first
+.BR \-d ,
+and the default configuration serves it to the site of that name alone, which answers for
+.I name
+and
+.BI www. name
+only.
+Names of other sites in it go unserved, and the deploy hook warns about them.
 .PP
 Certbot's keys are readable by root only.
 The deploy hook checks that certificate and key match, copies them for the
